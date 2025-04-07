@@ -1314,8 +1314,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          latestData?.bpm != null
-                              ? '${latestData!.bpm!.toStringAsFixed(1)}'
+                          calculatedBpmFromRaw != null
+                              ? '${calculatedBpmFromRaw!.toStringAsFixed(1)}' // 変更箇所: latestData?.bpm から calculatedBpmFromRaw に変更
                               : '--',
                           style: const TextStyle(
                             fontSize: 36,
@@ -1332,7 +1332,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                           ),
                         ),
                         const Spacer(),
-                        // 最終更新時間
+                        // 最終更新時間 (ここはlatestDataのタイムスタンプを使い続ける)
                         Text(
                           latestData?.timestamp != null
                               ? '最終更新: ${DateFormat('HH:mm:ss').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}'
@@ -1438,12 +1438,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
                             ? '${stepDetector.getLastStepInterval()!.toStringAsFixed(0)} ms'
                             : '-- ms'),
                     _buildInfoRow(
-                        '生データBPM:',
+                        '計算BPM (詳細):', // ラベル変更
                         calculatedBpmFromRaw != null
                             ? '${calculatedBpmFromRaw!.toStringAsFixed(1)} BPM'
                             : '-- BPM'),
                     _buildInfoRow(
-                        'フィルター適用BPM:',
+                        'M5デバイスBPM:', // ラベル変更
                         latestData?.bpm != null
                             ? '${latestData!.bpm!.toStringAsFixed(1)} BPM'
                             : '-- BPM'),
