@@ -16,6 +16,7 @@ import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
 import 'package:http/http.dart' as http;
 import 'package:crypto/crypto.dart' as crypto;
 import 'dart:convert' show utf8, base64; // base64 エンコーディング用
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // flutter_dotenv をインポート
 
 // 独自モジュール
 import 'models/sensor_data.dart';
@@ -24,7 +25,11 @@ import 'services/ble_service.dart';
 import 'services/metronome.dart';
 import 'services/data_upload_service.dart';
 
-void main() {
+Future<void> main() async {
+  // main 関数を Future<void> に変更し async を追加
+  WidgetsFlutterBinding.ensureInitialized(); // Flutterの初期化を保証
+  await dotenv.load(fileName: ".env"); // .env ファイルをロード
+
   // アプリ起動時にFlutterBluePlusを初期化
   if (Platform.isAndroid) {
     // Android固有の初期化
