@@ -20,6 +20,7 @@ dependencies:
   azblob: ^2.0.0
   crypto: ^3.0.3
   http: ^1.2.1
+  flutter_dotenv: ^5.1.0
 
 dev_dependencies:
   flutter_test:
@@ -29,3 +30,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/sounds/
+    - .env

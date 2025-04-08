@@ -13,13 +13,17 @@ import 'package:flutter/services.dart'; // HapticFeedback用
 import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
 import 'package:crypto/crypto.dart' as crypto;
 import 'dart:convert' show utf8, base64; // base64 エンコーディング用
+import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 
 // 独自モジュール
 import 'models/sensor_data.dart';
 import 'utils/step_detector.dart';
 import 'services/metronome.dart';
 
-void main() {
+void main() async {
+  // 環境変数の読み込み
+  await dotenv.load(fileName: ".env");
+
   // アプリ起動時にFlutterBluePlusを初期化
   if (Platform.isAndroid) {
     // Android固有の初期化
@@ -208,10 +212,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
   double? calculatedBpmFromRaw;
 
   // Azure Blob Storage接続情報
-  final String azureConnectionString = "***REMOVED***";
-  final String containerName = "accelerationdata"; // コンテナ名
-  final String azureSasUrl =
-      "BlobEndpoint=https://hagiharatest.blob.core.windows.net/;QueueEndpoint=https://hagiharatest.queue.core.windows.net/;FileEndpoint=https://hagiharatest.file.core.windows.net/;TableEndpoint=https://hagiharatest.table.core.windows.net/;SharedAccessSignature=sv=2024-11-04&ss=bfqt&srt=sco&sp=rwdlacupiytfx&se=2025-06-07T14:20:29Z&st=2025-04-06T06:20:29Z&spr=https,http&sig=6eTvHlWxWR1E5IjDOZlM4as4UawiAvZrZv9DZEnsfpg%3D";
+  String get azureConnectionString =>
+      dotenv.env['AZURE_CONNECTION_STRING'] ?? '';
+  String get containerName =>
+      dotenv.env['AZURE_CONTAINER_NAME'] ?? 'accelerationdata';
 
   @override
   void initState() {
