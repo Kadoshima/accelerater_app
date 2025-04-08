@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
 # 歩行適応型音楽プレイヤー 開発チェックリスト
 

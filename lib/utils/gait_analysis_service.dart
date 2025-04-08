@@ -16,6 +16,8 @@ class GaitAnalysisService {
   final double minSpm; // SPMの下限
   final double maxSpm; // SPMの上限
   final int historyBufferSize; // フィルタ/ピーク検出に必要なバッファサイズ
+  final double minPeakValleyDiff; // ピークと谷の最小差（ノイズ対策）
+  final double minValleyToPeakDiff; // 谷から次のピークまでの最小上昇量
 
   // --- 内部状態変数 ---
   final Queue<M5SensorData> _sensorHistory; // 最近のセンサーデータ履歴
@@ -29,32 +31,61 @@ class GaitAnalysisService {
   bool _isPotentialPeak = false; // ピーク候補フラグ
   double _valleyAfterPeak = double.maxFinite; // ピーク後の谷の深さ
   int _lastStepTimestamp = 0; // 最後のステップのタイムスタンプ
+  double _lastValleyValue = 1.0; // 最後に検出された谷の値
 
   // --- 結果 ---
   int _stepCount = 0;
   double _currentSpm = 0.0;
+  double _reliability = 0.0; // 検出の信頼度
+
+  // デバッグ用カウンター
+  int _sampleCount = 0;
 
   // --- ゲッター ---
   int get stepCount => _stepCount;
   double get currentSpm => _currentSpm;
+  double get lastPeakMagnitude => _lastPeakMagnitude;
+  double get dynamicThreshold => _dynamicThreshold;
+  double get reliability => _reliability;
+
+  /// 直近N個のステップ間隔（ミリ秒）を取得するメソッド
+  List<double> getLatestStepIntervals({int count = 5}) {
+    List<double> intervals = [];
+    if (_stepTimestamps.length >= 2) {
+      int numIntervals = math.min(count, _stepTimestamps.length - 1);
+      for (int i = _stepTimestamps.length - 1;
+          i >= _stepTimestamps.length - numIntervals;
+          i--) {
+        double interval =
+            (_stepTimestamps[i] - _stepTimestamps[i - 1]).toDouble();
+        intervals.insert(0, interval); // 逆順で追加されたものを元に戻す
+      }
+    }
+    return intervals;
+  }
 
   /// コンストラクタ
   GaitAnalysisService({
     this.samplingRate = 50.0,
-    this.lowPassCutoffFreq = 5.0, // 5Hzカットオフ
+    this.lowPassCutoffFreq = 2.5, // 2.5Hzカットオフ（以前は5Hz）
     this.minStepIntervalSec = 0.3, // 300ms (200 SPM)
     this.maxStepIntervalSec = 1.5, // 1500ms (40 SPM)
-    this.minDynamicThreshold = 0.3, // 閾値の下限 0.3G
-    this.thresholdFactor = 0.6, // ピークの60%を閾値に
+    this.minDynamicThreshold = 0.3, // 閾値の下限 0.3G（静止状態の1Gより低い値）- 以前は0.45G
+    this.thresholdFactor = 0.4, // ピークの40%を閾値に - 以前は0.5
     this.spmCalculationWindow = 5, // 直近5ステップでSPM計算
     this.minSpm = 40.0,
     this.maxSpm = 200.0,
     this.historyBufferSize = 5, // フィルタ/ピーク検出に最低5サンプル使用
+    this.minPeakValleyDiff = 0.1, // ピークと谷の差が0.1G以上必要 - 以前は0.15G
+    this.minValleyToPeakDiff = 0.08, // 谷から次のピークまでの上昇量が0.08G以上必要 - 以前は0.12G
   })  : _filterAlpha = _calculateFilterAlpha(samplingRate, lowPassCutoffFreq),
         _dynamicThreshold = minDynamicThreshold, // 初期閾値は下限値に設定
         _sensorHistory = Queue<M5SensorData>(),
         _filteredMagnitudeBuffer = Queue<double>(),
-        _stepTimestamps = [];
+        _stepTimestamps = [] {
+    print(
+        'GaitAnalysisService初期化: フィルタα=${_filterAlpha.toStringAsFixed(3)}, 閾値=${minDynamicThreshold}G');
+  }
 
   /// フィルタ係数アルファを計算
   static double _calculateFilterAlpha(double samplingRate, double cutoffFreq) {
@@ -66,6 +97,8 @@ class GaitAnalysisService {
   /// 新しいセンサーデータを処理
   /// M5SensorDataオブジェクトを受け取るように変更
   void addSensorData(M5SensorData sensorData) {
+    _sampleCount++;
+
     // 1. データバッファリング
     _sensorHistory.add(sensorData);
     // 必要最低限のサイズを保持
@@ -80,6 +113,13 @@ class GaitAnalysisService {
     _filteredMagnitudeBuffer.add(currentFilteredMagnitude);
     while (_filteredMagnitudeBuffer.length > historyBufferSize + 5) {
       _filteredMagnitudeBuffer.removeFirst();
+    }
+
+    // 100サンプルごとにデバッグ情報表示
+    if (_sampleCount % 100 == 0) {
+      print(
+          'GaitAnalysis状態: サンプル数=$_sampleCount, 現在閾値=${_dynamicThreshold.toStringAsFixed(3)}G, SPM=$_currentSpm, ステップ数=$_stepCount');
+      print('最新データ: 生=$magnitude, フィルタ後=$currentFilteredMagnitude');
     }
 
     // 3. ステップ検出を実行 (フィルタ後の値とタイムスタンプを使用)
@@ -117,32 +157,43 @@ class GaitAnalysisService {
 
     // --- ピーク候補の検出 ---
     // 条件: 閾値を超え、かつ上昇から下降に転じた点 (prevがピーク)
-    if (prevFilteredMag > _dynamicThreshold &&
-        prevFilteredMag > prevPrevFilteredMag &&
-        prevFilteredMag > currentFilteredMag) {
-      _isPotentialPeak = true;
-      _valleyAfterPeak = currentFilteredMag; // ピーク直後の値を谷の初期値とする
-      // print('Potential peak: ${prevFilteredMag.toStringAsFixed(3)} > Thr: ${_dynamicThreshold.toStringAsFixed(3)} @ $timestamp');
-    }
+    if (!_isPotentialPeak) {
+      // まだピーク候補がない場合、新しいピークを探す
+      if (prevFilteredMag > _dynamicThreshold &&
+          prevFilteredMag > prevPrevFilteredMag &&
+          prevFilteredMag > currentFilteredMag) {
+        // 新しいピーク候補を検出
+        _isPotentialPeak = true;
+        // ピーク値を保存（後で使用）
+        _lastPeakMagnitude = prevFilteredMag;
+        _valleyAfterPeak = currentFilteredMag; // ピーク直後の値を谷の初期値とする
 
-    // --- ピーク候補が出た後の谷の検出とステップ確定 ---
-    if (_isPotentialPeak) {
-      // 値が下降中は谷の値を更新
-      if (currentFilteredMag < prevFilteredMag) {
-        _valleyAfterPeak = math.min(_valleyAfterPeak, currentFilteredMag);
+        print(
+            'Potential peak detected: ${_lastPeakMagnitude.toStringAsFixed(3)} > Thr: ${_dynamicThreshold.toStringAsFixed(3)} @ $timestamp');
       }
-      // 値が上昇に転じたら、谷が確定したとみなしステップ判定
-      else if (currentFilteredMag > prevFilteredMag) {
-        // print('Step check triggered @ $timestamp. Peak used for threshold: ${_lastPeakMagnitude.toStringAsFixed(3)}, Valley: ${_valleyAfterPeak.toStringAsFixed(3)}');
+    } else {
+      // すでにピーク候補がある場合、谷を探す
+      if (currentFilteredMag < prevFilteredMag) {
+        // まだ下降中、谷の値を更新
+        _valleyAfterPeak = math.min(_valleyAfterPeak, currentFilteredMag);
+      } else if (currentFilteredMag > prevFilteredMag) {
+        // 上昇に転じた、谷が確定した
+        // ピークと谷の差が十分かチェック
+        double peakValleyDiff = _lastPeakMagnitude - _valleyAfterPeak;
+        double valleyToPeakDiff = currentFilteredMag - _valleyAfterPeak;
 
-        // オプション: ピークと谷の差が十分かチェック (ノイズ対策)
-        // double peakValleyDiff = prevFilteredMag - _valleyAfterPeak; // 今回検出したピークと谷の差
-        // if (peakValleyDiff < 0.1) { // 例: 0.1G未満の差はノイズとして無視
-        //   print('Step rejected (small peak-valley diff: ${peakValleyDiff.toStringAsFixed(3)})');
-        //   _isPotentialPeak = false; // フラグリセット
-        //   _valleyAfterPeak = double.maxFinite;
-        //   return; // ステップとしない
-        // }
+        print(
+            'Step check: Peak=${_lastPeakMagnitude.toStringAsFixed(3)}, Valley=${_valleyAfterPeak.toStringAsFixed(3)}, Diff=${peakValleyDiff.toStringAsFixed(3)}, ValleyToCurrent=${valleyToPeakDiff.toStringAsFixed(3)}');
+
+        // 振幅チェック - 条件を少し緩和
+        if (peakValleyDiff < minPeakValleyDiff ||
+            valleyToPeakDiff < minValleyToPeakDiff) {
+          print(
+              'Step rejected (small amplitude: peak-valley=${peakValleyDiff.toStringAsFixed(3)}, valley-current=${valleyToPeakDiff.toStringAsFixed(3)})');
+          _isPotentialPeak = false; // フラグリセット
+          _valleyAfterPeak = double.maxFinite;
+          return; // ステップとしない
+        }
 
         // ステップ間隔をチェック
         double intervalSeconds = (_lastStepTimestamp > 0)
@@ -155,25 +206,34 @@ class GaitAnalysisService {
           if (intervalSeconds > maxStepIntervalSec) {
             print(
                 'New sequence likely started (interval: ${intervalSeconds.toStringAsFixed(2)}s > ${maxStepIntervalSec}s)');
-            // ここで _stepTimestamps.clear() するとSPMが不安定になる可能性があるため注意
           }
 
           // ステップ確定！
           _stepTimestamps.add(timestamp);
           _stepCount++;
-          _lastPeakMagnitude = prevFilteredMag; // ★ 確定したピークの振幅を次回閾値計算用に保存
+          // _lastPeakMagnitudeはすでに設定済み
           _lastStepTimestamp = timestamp;
-          // print('Step confirmed! Count: $_stepCount, Interval: ${intervalSeconds.toStringAsFixed(2)}s, Peak: ${_lastPeakMagnitude.toStringAsFixed(3)} @ $timestamp');
+          _lastValleyValue = _valleyAfterPeak; // 最後の谷の値を保存（信頼度計算用）
+
+          // 信頼度計算 (ピークと谷の差が大きいほど信頼度が高い)
+          _reliability = math.min(1.0, peakValleyDiff / 1.0);
+
+          print(
+              'Step confirmed! Count: $_stepCount, Interval: ${intervalSeconds.toStringAsFixed(2)}s, Peak: ${_lastPeakMagnitude.toStringAsFixed(3)}, Valley: ${_valleyAfterPeak.toStringAsFixed(3)}, Reliability: ${(_reliability * 100).toStringAsFixed(1)}%');
 
           // SPM計算用に古いタイムスタンプを削除（ウィンドウサイズの2倍程度保持）
           while (_stepTimestamps.length > spmCalculationWindow * 2 + 1) {
             _stepTimestamps.removeAt(0);
           }
+
+          // ステップ検出後、すぐにSPMを計算
+          _calculateSpm();
         } else {
-          // print('Step rejected (too short interval: ${intervalSeconds.toStringAsFixed(2)}s)');
+          print(
+              'Step rejected (too short interval: ${intervalSeconds.toStringAsFixed(2)}s < ${minStepIntervalSec}s)');
         }
 
-        // 判定後はフラグと谷をリセット
+        // ステップ判定処理が終わったらフラグと谷をリセット
         _isPotentialPeak = false;
         _valleyAfterPeak = double.maxFinite;
       }
@@ -223,7 +283,8 @@ class GaitAnalysisService {
     // SPMに変換してクリッピング
     if (averageIntervalMillis > 0) {
       _currentSpm = (60000.0 / averageIntervalMillis).clamp(minSpm, maxSpm);
-      // print('SPM updated: ${_currentSpm.toStringAsFixed(1)} (based on ${intervals.length} intervals)');
+      print(
+          'SPM updated: ${_currentSpm.toStringAsFixed(1)} (based on ${intervals.length} intervals, avg interval=${averageIntervalMillis.toStringAsFixed(1)}ms)');
     } else {
       _currentSpm = 0.0; // 平均間隔が0ならSPMも0
     }
@@ -240,9 +301,10 @@ class GaitAnalysisService {
       // 最大ステップ間隔の1.5倍の時間、ステップがなければ停止とみなす
       if (timeSinceLastStepSec > maxStepIntervalSec * 1.5) {
         if (_currentSpm != 0.0) {
-          // print('Resetting SPM to 0 due to inactivity ($timeSinceLastStepSec sec)');
+          print(
+              'Resetting SPM to 0 due to inactivity ($timeSinceLastStepSec sec)');
           _currentSpm = 0.0;
-          // 必要に応じて古いタイムスタンプをクリアすることも検討
+          // 古いタイムスタンプをクリアする
           // _stepTimestamps.clear();
         }
       }
@@ -265,6 +327,8 @@ class GaitAnalysisService {
     _lastStepTimestamp = 0;
     _stepCount = 0;
     _currentSpm = 0.0;
+    _reliability = 0.0;
+    _sampleCount = 0;
     print("GaitAnalysisService reset.");
   }
 }

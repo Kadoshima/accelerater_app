@@ -15,7 +15,7 @@ import 'package:http/http.dart' as http;
 // 独自モジュール
 import 'models/sensor_data.dart';
 import 'utils/gait_analysis_service.dart'; // 新しいサービスをインポート
-import 'services/metronome.dart';
+import 'services/metronome.dart'; // メトロノームサービス
 
 void main() async {
   // 環境変数の読み込み
@@ -152,7 +152,15 @@ class _BLEHomePageState extends State<BLEHomePage> {
   bool get isPlaying => _metronome.isPlaying;
   double get currentMusicBPM => _metronome.currentBpm;
   MusicTempo? selectedTempo;
-  final List<MusicTempo> tempoPresets = [
+  // メトロノーム操作用テンポリスト (80, 100, 120, 140 BPM)
+  final List<MusicTempo> metronomeTempoPresets = [
+    MusicTempo(name: '80 BPM', bpm: 80.0),
+    MusicTempo(name: '100 BPM', bpm: 100.0),
+    MusicTempo(name: '120 BPM', bpm: 120.0),
+    MusicTempo(name: '140 BPM', bpm: 140.0),
+  ];
+  // 実験モード用テンポリスト (既存のまま)
+  final List<MusicTempo> experimentTempoPresets = [
     MusicTempo(name: '60 BPM', bpm: 60.0),
     MusicTempo(name: '80 BPM', bpm: 80.0),
     MusicTempo(name: '100 BPM', bpm: 100.0),
@@ -236,8 +244,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     _metronome = Metronome(); // Metronomeインスタンスを作成
     _metronome.initialize().then((_) {
-      // Metronomeを初期化
-      selectedTempo = tempoPresets[2]; // Default to 100 BPM
+      // メトロノームのデフォルトテンポを80BPMに設定
+      selectedTempo = metronomeTempoPresets[0]; // デフォルト80 BPM
       _metronome.changeTempo(selectedTempo!.bpm);
       if (mounted) {
         setState(() {}); // UI更新
@@ -339,8 +347,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
   void _recordExperimentData() {
     // 最新の歩行解析結果を取得
     double detectedSpm = gaitAnalysisService.currentSpm; // SPMを取得
-    // 信頼度は現アルゴリズムでは直接出力されないため、一旦固定値 or null
-    double? reliability = null; // もしくは推定値を計算する方法を別途実装
+    // 信頼度値も取得
+    double reliability = gaitAnalysisService.reliability;
 
     // 最新のセンサーデータ
     double? accX = latestData?.accX;
@@ -348,11 +356,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
     double? accZ = latestData?.accZ;
     double? magnitude = latestData?.magnitude;
 
+    // デバッグログ
+    if (isRecording) {
+      print(
+          'データ記録中: SPM=${detectedSpm.toStringAsFixed(1)}, 信頼度=${(reliability * 100).toStringAsFixed(1)}%, 加速度=${magnitude?.toStringAsFixed(3) ?? "N/A"}');
+    }
+
     final record = ExperimentRecord(
       timestamp: DateTime.now(),
       targetBPM: currentMusicBPM, // 音楽テンポは targetBPM として記録
       detectedBPM: detectedSpm > 0 ? detectedSpm : null, // 検出されたSPMを記録
-      reliability: reliability,
+      reliability: reliability > 0 ? reliability : null, // 信頼度も記録
       accX: accX,
       accY: accY,
       accZ: accZ,
@@ -1184,16 +1198,30 @@ class _BLEHomePageState extends State<BLEHomePage> {
           experimentTimer!.cancel();
           experimentTimer = null;
         }
-        _finishExperiment();
+        // _finishExperiment(); // 直接呼び出さない、ボタン操作で明示的に呼び出す
       } else {
         // 記録開始
         experimentRecords.clear();
         bpmSpots.clear();
         isRecording = true;
 
-        if (isPlaying && isExperimentMode) {
-          _startExperiment();
-        }
+        // モニターモードでの記録開始時に実験ファイル名を設定
+        experimentFileName =
+            'monitor_data_${selectedTempo?.bpm ?? currentMusicBPM}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
+
+        // モニターモードでも5秒ごとに実験データを記録する簡易タイマーを設定
+        experimentTimer =
+            Timer.periodic(const Duration(milliseconds: 100), (timer) {
+          if (timer.tick % 10 == 0) {
+            // 1秒ごとの処理 (UI更新など)
+            setState(() {});
+          }
+
+          // 最新の加速度データがあれば記録
+          if (latestData != null && isRecording) {
+            _recordExperimentData();
+          }
+        });
       }
     });
   }
@@ -1491,7 +1519,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         const Text('音声テンポ: '),
                         DropdownButton<MusicTempo>(
                           value: selectedTempo,
-                          items: tempoPresets.map((tempo) {
+                          items: experimentTempoPresets.map((tempo) {
                             return DropdownMenuItem<MusicTempo>(
                               value: tempo,
                               child: Text(tempo.name),
@@ -1974,9 +2002,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // データモニターモードのUI
   Widget _buildDataMonitorModeUI() {
-    // アクセラレーショングラフ用のデータ (変更なし)
-    // ...
-
     return SingleChildScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       child: Padding(
@@ -2011,6 +2036,33 @@ class _BLEHomePageState extends State<BLEHomePage> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+                        const Spacer(),
+                        // 記録中インジケーター (新規追加)
+                        if (isRecording)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.red,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.fiber_manual_record,
+                                    color: Colors.white, size: 12),
+                                SizedBox(width: 4),
+                                Text(
+                                  '記録中',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                       ],
                     ),
                     const SizedBox(height: 10),
@@ -2057,6 +2109,166 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         ),
                       ),
                     ),
+                    // 記録ボタン追加 (新規追加)
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        ElevatedButton.icon(
+                          icon: Icon(
+                            isRecording
+                                ? Icons.stop
+                                : Icons.fiber_manual_record,
+                            color: Colors.white,
+                          ),
+                          label: Text(
+                            isRecording ? "記録停止" : "記録開始",
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                          onPressed:
+                              latestData == null ? null : _toggleRecording,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor:
+                                isRecording ? Colors.red : Colors.blue,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 10),
+                          ),
+                        ),
+                        if (isRecording)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8.0),
+                            child: Text(
+                              '収集データ: ${experimentRecords.length} 行',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blue.shade700,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // --- ★歩行解析詳細カード (新規追加) ---
+            Card(
+              elevation: 4,
+              color: Colors.amber.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.analytics, color: Colors.amber),
+                        SizedBox(width: 8),
+                        Text(
+                          '歩行解析詳細',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _buildInfoRow(
+                        '最終ピーク振幅 (G):',
+                        gaitAnalysisService.lastPeakMagnitude
+                            .toStringAsFixed(3)),
+                    _buildInfoRow(
+                        '動的閾値 (G):',
+                        gaitAnalysisService.dynamicThreshold
+                            .toStringAsFixed(3)),
+                    _buildInfoRow('信頼度スコア:',
+                        '${(gaitAnalysisService.reliability * 100).toStringAsFixed(1)}%'),
+                    const SizedBox(height: 8),
+                    const Text('直近ステップ間隔 (ms):',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(
+                      gaitAnalysisService
+                              .getLatestStepIntervals()
+                              .map((iv) => iv.toStringAsFixed(0))
+                              .join(', ')
+                              .isEmpty
+                          ? '--'
+                          : gaitAnalysisService
+                              .getLatestStepIntervals()
+                              .map((iv) => iv.toStringAsFixed(0))
+                              .join(', '),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // --- ★メトロノームカード (新規追加) ---
+            Card(
+              elevation: 4,
+              color: Colors.teal.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.music_note, color: Colors.teal),
+                        SizedBox(width: 8),
+                        Text(
+                          'メトロノーム',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('テンポ (BPM):'),
+                        DropdownButton<MusicTempo>(
+                          value: selectedTempo, // 現在選択されているテンポ
+                          items: metronomeTempoPresets.map((tempo) {
+                            // メトロノーム用プリセットを使用
+                            return DropdownMenuItem<MusicTempo>(
+                              value: tempo,
+                              child: Text(tempo.name),
+                            );
+                          }).toList(),
+                          onChanged: isPlaying // 再生中は変更不可
+                              ? null
+                              : (MusicTempo? newTempo) {
+                                  if (newTempo != null) {
+                                    _changeTempo(newTempo);
+                                  }
+                                },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Center(
+                      child: ElevatedButton.icon(
+                        icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+                        label: Text(isPlaying ? "停止" : "再生"),
+                        onPressed: _togglePlayback,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              isPlaying ? Colors.orange : Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 30, vertical: 10),
+                        ),
+                      ),
+                    )
                   ],
                 ),
               ),
@@ -2065,8 +2277,96 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
             // --- 加速度情報カード (変更なし) ---
             Card(
-                // ... (加速度表示部分は変更なし)
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.speed, color: Colors.orange),
+                        SizedBox(width: 8),
+                        Text(
+                          '加速度情報',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildAccelDataColumn(
+                            'X軸', latestData?.accX, Colors.red),
+                        _buildAccelDataColumn(
+                            'Y軸', latestData?.accY, Colors.green),
+                        _buildAccelDataColumn(
+                            'Z軸', latestData?.accZ, Colors.blue),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Text(
+                          '合成加速度:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          latestData?.magnitude != null
+                              ? '${latestData!.magnitude!.toStringAsFixed(3)} G'
+                              : '-- G',
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // --- ジャイロ情報カード ---
+            Card(
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.directions_walk, color: Colors.orange),
+                        SizedBox(width: 8),
+                        Text(
+                          'ジャイロセンサー情報',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildGyroDataColumn(
+                            'X軸', latestData?.gyroX, Colors.red),
+                        _buildGyroDataColumn(
+                            'Y軸', latestData?.gyroY, Colors.green),
+                        _buildGyroDataColumn(
+                            'Z軸', latestData?.gyroZ, Colors.blue),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 16),
 
             // --- SPM推移グラフ ---
@@ -2146,6 +2446,60 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   ),
                 ),
               ),
+
+            // --- ★データ保存・アップロードボタン (新規追加) ---
+            if (isRecording && experimentRecords.isNotEmpty)
+              Card(
+                elevation: 4,
+                color: Colors.blue.shade50,
+                margin: const EdgeInsets.only(top: 16, bottom: 24),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.cloud_upload, color: Colors.blue),
+                          SizedBox(width: 8),
+                          Text(
+                            'データ保存・アップロード',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${experimentRecords.length}行のデータが記録されています。記録を停止して保存することができます。',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade700,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Center(
+                        child: ElevatedButton.icon(
+                          icon: const Icon(Icons.cloud_upload),
+                          label: const Text('記録停止 & Azureにアップロード'),
+                          onPressed: () {
+                            _toggleRecording(); // 記録停止
+                            _finishExperiment(); // データ保存＆アップロード
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -2154,10 +2508,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 指定したBPMに最も近いテンポプリセットを見つける
   MusicTempo _findNearestTempoPreset(double bpm) {
-    MusicTempo nearest = tempoPresets[0];
-    double minDiff = (tempoPresets[0].bpm - bpm).abs();
+    MusicTempo nearest = experimentTempoPresets[0];
+    double minDiff = (experimentTempoPresets[0].bpm - bpm).abs();
 
-    for (var tempo in tempoPresets) {
+    for (var tempo in experimentTempoPresets) {
       double diff = (tempo.bpm - bpm).abs();
       if (diff < minDiff) {
         minDiff = diff;
@@ -2383,6 +2737,31 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
 
     return {'lag': bestLag, 'confidence': confidence};
+  }
+
+  Widget _buildDataRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+          Text(value),
+        ],
+      ),
+    );
+  }
+
+  // SPM表示関数を修正
+  String _formatSpm(double spm) {
+    if (spm <= 0.1) return 'N/A';
+    return spm.toStringAsFixed(1);
+  }
+
+  // 表示用の信頼度文字列のフォーマット
+  String _formatReliability(double reliability) {
+    if (reliability <= 0.01) return 'N/A';
+    return '${(reliability * 100).toStringAsFixed(1)}%';
   }
 }
 
