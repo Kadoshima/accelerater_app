@@ -2,23 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // flutter_blue_plusライブラリ
 import 'dart:async'; // Streamの取り扱いに必要
 import 'dart:io';
-import 'dart:convert'; // JSONのデコード用
-// import 'package:audioplayers/audioplayers.dart'; // シンプルな音声再生用 (just_audioに移行)
+import 'dart:convert'; // jsonDecodeで使用するため、これは残す
 import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'dart:math' as math; // Mathクラスを使うためにインポート（as mathで修飾）
-import 'package:flutter/services.dart'; // HapticFeedback用
 import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
-import 'package:crypto/crypto.dart' as crypto;
-import 'dart:convert' show utf8, base64; // base64 エンコーディング用
 import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 import 'package:http/http.dart' as http;
 
 // 独自モジュール
 import 'models/sensor_data.dart';
-import 'utils/right_foot_cadence_detector.dart'; // 追加
+import 'utils/gait_analysis_service.dart'; // 新しいサービスをインポート
 import 'services/metronome.dart';
 
 void main() async {
@@ -147,48 +143,36 @@ class _BLEHomePageState extends State<BLEHomePage> {
   String experimentFileName = '';
 
   // グラフデータ
-  List<FlSpot> bpmSpots = [];
-  double minY = 60;
-  double maxY = 130;
+  List<FlSpot> bpmSpots = []; // SPMデータ格納用 (名前はそのまま)
+  double minY = 40; // SPM範囲に合わせて調整
+  double maxY = 160; // SPM範囲に合わせて調整
 
-  // 音楽プレイヤー関連の変数を削除
-  // final AudioPlayer _audioPlayer = AudioPlayer();
-  // Uint8List? _clickSoundBytes; // メモリ上のクリック音データ
-
-  // isPlayingとcurrentMusicBPMはメトロノームの状態を反映させる
+  // メトロノーム関連
+  late Metronome _metronome;
   bool get isPlaying => _metronome.isPlaying;
   double get currentMusicBPM => _metronome.currentBpm;
-
-  // メトロノームインスタンス
-  late Metronome _metronome;
-
-  bool isAutoAdjustEnabled = false; // 自動テンポ調整フラグ
-  double lastAutoAdjustTime = 0; // 最後に自動調整した時刻（ミリ秒）
-  static const double AUTO_ADJUST_INTERVAL = 5000; // 自動調整の間隔（ミリ秒）
-
-  // 段階的テンポ変更用 (メトロノームクラスに移管検討)
-  bool isGradualTempoChangeEnabled = false; // 段階的テンポ変更フラグ
-  double targetBPM = 120.0; // 目標BPM
-  double initialBPM = 100.0; // 初期BPM
-  double tempoChangeStep = 1.0; // テンポ変更ステップ（BPM/分）
-  int tempoChangeIntervalSeconds = 10; // テンポ変更間隔（秒）
-  Timer? gradualTempoTimer; // テンポ変更タイマー
-
-  // 音楽テンポのプリセット
-  final List<MusicTempo> tempoPresets = [
-    MusicTempo(name: '90 BPM', bpm: 90.0),
-    MusicTempo(name: '100 BPM', bpm: 100.0),
-    MusicTempo(name: '110 BPM', bpm: 110.0),
-    MusicTempo(name: '120 BPM', bpm: 120.0),
-  ];
   MusicTempo? selectedTempo;
+  final List<MusicTempo> tempoPresets = [
+    MusicTempo(name: '60 BPM', bpm: 60.0),
+    MusicTempo(name: '80 BPM', bpm: 80.0),
+    MusicTempo(name: '100 BPM', bpm: 100.0),
+    MusicTempo(name: '120 BPM', bpm: 120.0),
+    MusicTempo(name: '140 BPM', bpm: 140.0),
+  ];
 
-  // 実験モード
+  // 実験モード関連
   bool isExperimentMode = false;
-  int experimentDurationSeconds = 60; // 1分間の実験
+  int experimentDurationSeconds = 60;
   DateTime? experimentStartTime;
   Timer? experimentTimer;
   int remainingSeconds = 0;
+
+  // 歩行解析サービス
+  late final GaitAnalysisService gaitAnalysisService;
+
+  // UI表示用変数
+  double _displaySpm = 0.0; // 表示するSPM
+  int _displayStepCount = 0; // 表示するステップ数
 
   // デバイス名
   final targetDeviceName = "M5StickIMU";
@@ -215,19 +199,18 @@ class _BLEHomePageState extends State<BLEHomePage> {
   List<FlSpot> accYSpots = [];
   List<FlSpot> accZSpots = [];
   List<FlSpot> magnitudeSpots = [];
-  static const int maxGraphPoints = 50; // グラフの最大ポイント数
   bool showRawDataGraph = true;
 
   // 新しい右足センサー向け歩行検出器
-  late final RightFootCadenceDetector cadenceDetector; // 追加
+  // late final RightFootCadenceDetector cadenceDetector; // 削除
 
   // BPMの手動計算結果
   double? calculatedBpmFromRaw;
 
-  // Detectorからの最新結果を保持する状態変数
-  double _currentCalculatedBpm = 0.0;
-  double _currentConfidence = 0.0;
-  Map<String, dynamic> _currentDebugInfo = {};
+  // Detectorからの最新結果を保持する状態変数 (不要)
+  // double _currentCalculatedBpm = 0.0; // 削除
+  // double _currentConfidence = 0.0; // 削除
+  // Map<String, dynamic> _currentDebugInfo = {}; // 削除
 
   // Azure Blob Storage接続情報
   String get azureStorageAccount =>
@@ -245,12 +228,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // 初期化を非同期で安全に行う
     _initBluetooth();
 
-    cadenceDetector = RightFootCadenceDetector(); // 新しい検出器を初期化
+    // cadenceDetector = RightFootCadenceDetector(); // 新しい検出器を初期化 // 削除
+
+    // 歩行解析サービスを初期化
+    gaitAnalysisService =
+        GaitAnalysisService(samplingRate: 50.0); // サンプリングレートを指定
 
     _metronome = Metronome(); // Metronomeインスタンスを作成
     _metronome.initialize().then((_) {
       // Metronomeを初期化
-      selectedTempo = tempoPresets[1]; // 100 BPM
+      selectedTempo = tempoPresets[2]; // Default to 100 BPM
       _metronome.changeTempo(selectedTempo!.bpm);
       if (mounted) {
         setState(() {}); // UI更新
@@ -320,7 +307,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 実験ファイル名を設定
     experimentFileName =
-        'acceleration_data_${currentMusicBPM.toStringAsFixed(0)}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
+        'gait_data_${selectedTempo?.bpm ?? currentMusicBPM}_target_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
 
     // 加速度データを高頻度（100ms間隔）で記録するタイマー
     experimentTimer =
@@ -348,16 +335,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // print('加速度データの記録を開始しました: $experimentFileName (100msごと)');
   }
 
-  // 実験データを記録 (状態変数を使用するように修正)
+  // 実験データを記録 (SPMを記録するように変更)
   void _recordExperimentData() {
-    // Use the state variables directly
-    double? detectedBpm =
-        _currentCalculatedBpm > 0 ? _currentCalculatedBpm : null;
-    double? reliability = _currentConfidence > 0 ? _currentConfidence : null;
+    // 最新の歩行解析結果を取得
+    double detectedSpm = gaitAnalysisService.currentSpm; // SPMを取得
+    // 信頼度は現アルゴリズムでは直接出力されないため、一旦固定値 or null
+    double? reliability = null; // もしくは推定値を計算する方法を別途実装
 
-    // If BPM is null from the detector, fallback to the potentially older UI value
-    detectedBpm ??= calculatedBpmFromRaw;
-
+    // 最新のセンサーデータ
     double? accX = latestData?.accX;
     double? accY = latestData?.accY;
     double? accZ = latestData?.accZ;
@@ -365,8 +350,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     final record = ExperimentRecord(
       timestamp: DateTime.now(),
-      targetBPM: currentMusicBPM,
-      detectedBPM: detectedBpm,
+      targetBPM: currentMusicBPM, // 音楽テンポは targetBPM として記録
+      detectedBPM: detectedSpm > 0 ? detectedSpm : null, // 検出されたSPMを記録
       reliability: reliability,
       accX: accX,
       accY: accY,
@@ -375,18 +360,20 @@ class _BLEHomePageState extends State<BLEHomePage> {
     );
 
     if (mounted) {
-      // Ensure mounted check
       setState(() {
         experimentRecords.add(record);
 
-        // Update graph data if BPM is valid
-        if (detectedBpm != null && detectedBpm > 0) {
-          final time = (experimentRecords.length).toDouble();
-          bpmSpots.add(FlSpot(time, detectedBpm));
+        // Update graph data if SPM is valid
+        if (detectedSpm > 0) {
+          final time = (experimentRecords.length).toDouble(); // X軸はレコード数
+          // bpmSpotsをspmSpotsに変更検討 or そのままBPMとしてプロット
+          bpmSpots.add(FlSpot(time, detectedSpm));
 
-          // Adjust Y-axis range
-          if (detectedBpm < minY) minY = detectedBpm - 5;
-          if (detectedBpm > maxY) maxY = detectedBpm + 5;
+          // Y軸の範囲を調整 (40-160 SPM程度を想定)
+          if (detectedSpm < minY) minY = detectedSpm - 10;
+          if (detectedSpm > maxY) maxY = detectedSpm + 10;
+          if (minY < 40) minY = 40;
+          if (maxY > 180) maxY = 180;
         }
       });
     }
@@ -673,7 +660,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // 実験ファイル名の確認
     if (experimentFileName.isEmpty) {
       experimentFileName =
-          'acceleration_data_${selectedTempo?.bpm ?? currentMusicBPM}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
+          'gait_data_${selectedTempo?.bpm ?? currentMusicBPM}_target_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
     }
 
     // ローカルにCSVファイルとして保存
@@ -685,7 +672,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
       [
         'Timestamp',
         'Target BPM',
-        'Detected BPM',
+        'Detected SPM', // ヘッダー変更
         'Reliability',
         'AccX',
         'AccY',
@@ -1045,114 +1032,130 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
   }
 
-  /// Bluetooth Serial通信のセットアップ
+  /// Bluetooth Serial通信のセットアップ (データ処理部分を変更)
   Future<void> _setupSerialCommunication() async {
     if (targetDevice == null || _isDisposing) return;
-
     try {
-      // M5StickGaitのBluetoothサービスを探索
       List<BluetoothService> services = await targetDevice!.discoverServices();
-
       for (BluetoothService service in services) {
-        print('サービス発見: ${service.uuid}');
-
-        // 指定されたサービスUUIDを探す
         if (service.uuid == serviceUuid) {
-          // サービス内のキャラクタリスティックを探索
           for (BluetoothCharacteristic c in service.characteristics) {
-            // 指定されたキャラクタリスティックUUIDを探す
             if (c.uuid == charUuid) {
-              print('通知可能なキャラクタリスティック発見: ${c.uuid}');
+              await c.setNotifyValue(true);
+              StreamSubscription characteristicSubscription =
+                  c.lastValueStream.listen((value) {
+                if (value.isEmpty || _isDisposing) return;
+                try {
+                  String jsonString = String.fromCharCodes(value);
+                  final jsonData = jsonDecode(jsonString);
+                  final sensorData = M5SensorData.fromJson(jsonData);
 
-              try {
-                // Notifyを有効化
-                await c.setNotifyValue(true);
-
-                // データリスナーの設定
-                StreamSubscription characteristicSubscription =
-                    c.lastValueStream.listen((value) {
-                  if (value.isEmpty || _isDisposing) return;
-
-                  try {
-                    // 受信したバイト列をUTF-8文字列に変換
-                    String jsonString = String.fromCharCodes(value);
-                    // print('受信データ: $jsonString'); // この行をコメントアウト
-
-                    // JSONとして解析
-                    final jsonData = jsonDecode(jsonString);
-                    final sensorData = M5SensorData.fromJson(jsonData);
-
-                    if (!_isDisposing && mounted) {
-                      setState(() {
-                        latestData = sensorData;
-
-                        // 履歴に追加
-                        dataHistory.add(sensorData);
-                        if (dataHistory.length > maxHistorySize) {
-                          dataHistory.removeAt(0);
-                        }
-
-                        // データタイプに応じた処理
-                        if (sensorData.type == 'raw' ||
-                            sensorData.type == 'imu') {
-                          // デバッグ出力追加（センサーデータ確認用）
-                          /* print(
-                              '📱 IMUデータ: X=${sensorData.accX?.toStringAsFixed(3)}, Y=${sensorData.accY?.toStringAsFixed(3)}, Z=${sensorData.accZ?.toStringAsFixed(3)}'); */
-
-                          // RAWデータの場合は加速度データを処理
-                          _processRawData(sensorData);
-                        } else if (sensorData.type == 'bpm') {
-                          // BPMデータの場合
-                          // 自動テンポ調整が有効なら実行
-                          if (isAutoAdjustEnabled &&
-                              isPlaying &&
-                              !isExperimentMode &&
-                              sensorData.bpm != null) {
-                            double currentTime = DateTime.now()
-                                .millisecondsSinceEpoch
-                                .toDouble();
-                            if (currentTime - lastAutoAdjustTime >=
-                                AUTO_ADJUST_INTERVAL) {
-                              double detectedBPM = sensorData.bpm!;
-                              double bpmDifference =
-                                  (detectedBPM - currentMusicBPM).abs();
-
-                              if (bpmDifference > currentMusicBPM * 0.05) {
-                                double newBPM = currentMusicBPM +
-                                    (detectedBPM - currentMusicBPM) * 0.3;
-                                newBPM = newBPM.clamp(80.0, 140.0);
-                                _changeMusicTempo(newBPM);
-                                lastAutoAdjustTime = currentTime;
-                                print(
-                                    'BPMモードテンポ自動調整: $currentMusicBPM BPM (検出: $detectedBPM BPM)');
-                              }
-                            }
-                          }
-
-                          // 実験モードで記録中なら記録にも追加
-                          if (isRecording && experimentTimer != null) {
-                            _recordExperimentData();
-                          }
-                        }
-                      });
-                    }
-                  } catch (e) {
-                    print('データ解析エラー: $e');
+                  if (!_isDisposing && mounted) {
+                    _processSensorData(sensorData);
                   }
-                }, onError: (error) {
-                  print('キャラクタリスティック読み取りエラー: $error');
-                });
-                _streamSubscriptions.add(characteristicSubscription);
-              } catch (e) {
-                print('通知有効化エラー: $e');
-              }
+                } catch (e) {
+                  print('データ解析エラー: $e');
+                }
+              }, onError: (error) {
+                print('キャラクタリスティック読み取りエラー: $error');
+              });
+              _streamSubscriptions.add(characteristicSubscription);
+              print('Notify設定完了: ${c.uuid}');
+              return; // キャラクタリスティック見つけたらループ抜ける
             }
           }
         }
       }
+      print('ターゲットキャラクタリスティックが見つかりません');
     } catch (e) {
-      print('サービス探索エラー: $e');
+      print('サービス探索/Notify設定エラー: $e');
     }
+  }
+
+  /// 新しいセンサーデータを処理するメソッド
+  void _processSensorData(M5SensorData sensorData) {
+    if (!mounted) return; // マウントされていない場合は処理しない
+
+    setState(() {
+      latestData = sensorData;
+
+      // 履歴に追加
+      dataHistory.add(sensorData);
+      if (dataHistory.length > maxHistorySize) {
+        dataHistory.removeAt(0);
+      }
+
+      // 歩行解析サービスにデータを渡す
+      gaitAnalysisService.addSensorData(sensorData);
+
+      // UI表示用の値を更新
+      _displaySpm = gaitAnalysisService.currentSpm;
+      _displayStepCount = gaitAnalysisService.stepCount;
+
+      // グラフ用データの更新 (SPM)
+      if (_displaySpm > 0) {
+        _updateSpmGraphData(_displaySpm);
+      }
+
+      // 実験モードで記録中なら記録 (タイマー内で実施)
+      // if (isRecording && experimentTimer != null) { ... }
+    });
+  }
+
+  /// SPMグラフデータを更新するメソッド
+  void _updateSpmGraphData(double spm) {
+    if (!mounted) return; // 安全チェック
+
+    // タイムスタンプを取得（現在時刻 or 最後に受信したセンサーデータのタイムスタンプ）
+    final time =
+        (latestData?.timestamp ?? DateTime.now().millisecondsSinceEpoch)
+            .toDouble();
+
+    setState(() {
+      // SPMデータをグラフに追加
+      // タイムスタンプをX軸として追加
+      bpmSpots.add(FlSpot(time, spm));
+
+      // グラフ表示ポイント数の制限 (例: 過去5分 = 300秒 * 50Hz = 15000点 だと多すぎるので時間で制限)
+      const int maxGraphDurationMillis = 5 * 60 * 1000; // 5分
+      if (bpmSpots.isNotEmpty &&
+          (time - bpmSpots.first.x) > maxGraphDurationMillis) {
+        // 5分以上前のデータを削除
+        bpmSpots
+            .removeWhere((spot) => (time - spot.x) > maxGraphDurationMillis);
+      }
+
+      // Y軸の範囲を動的に調整 (既存の minY, maxY を利用)
+      // グラフ内のデータに基づいて範囲を決定
+      if (bpmSpots.isNotEmpty) {
+        double currentMinSpotY = bpmSpots.map((s) => s.y).reduce(math.min);
+        double currentMaxSpotY = bpmSpots.map((s) => s.y).reduce(math.max);
+
+        // 範囲に少し余裕を持たせる
+        double padding = 10.0;
+        minY = math.max(40, currentMinSpotY - padding); // 最小値 40
+        maxY = math.min(200, currentMaxSpotY + padding); // 最大値 200
+
+        // 範囲が狭すぎる場合の調整 (最小40の幅を持たせる)
+        if (maxY - minY < 40) {
+          double center = (minY + maxY) / 2;
+          minY = math.max(40, center - 20); // 最小値制限も考慮
+          maxY = math.min(200, center + 20); // 最大値制限も考慮
+        }
+        // さらに狭い場合の最終調整
+        if (maxY - minY < 40) {
+          minY = 40;
+          maxY = 80;
+        }
+        // 範囲の再制約
+        minY = math.max(40, minY);
+        maxY = math.min(200, maxY);
+      } else {
+        // データがない場合はデフォルト範囲
+        minY = 40;
+        maxY = 160;
+      }
+    });
   }
 
   /// 切断
@@ -1273,8 +1276,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
           // メインコンテンツ - Expandedで残りの空間を使う
           Expanded(
             child: isExperimentMode
-                ? _buildExperimentMode()
-                : _buildDataMonitorMode(),
+                ? _buildExperimentModeUI() // 実験モードUI
+                : _buildDataMonitorModeUI(), // モニターモードUI
           ),
 
           // 実験モード切り替えボタン - 常に下部に表示
@@ -1318,254 +1321,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
     );
   }
 
-  // データモニターモードのUIを構築 (状態変数を使用するように修正)
-  Widget _buildDataMonitorMode() {
-    // Use state variables instead of calling detector
-    Map<String, dynamic> debugInfo = _currentDebugInfo;
-    double directConf = debugInfo['confidence']?['direct'] ?? 0.0;
-    double freqConf = debugInfo['confidence']?['freq'] ?? 0.0;
-    String method = debugInfo['method'] ?? 'N/A';
-    double finalConf = debugInfo['confidence']?['final'] ??
-        _currentConfidence; // Use state confidence as fallback
+  // データモニターモードのUIを構築 (未使用のため削除)
 
-    return SingleChildScrollView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'リアルタイムデータ',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-
-            // 歩行BPM情報 Card
-            Card(
-              elevation: 4,
-              color: Colors.lightBlue.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.monitor_heart, color: Colors.blue),
-                        const SizedBox(width: 8),
-                        const Text(
-                          '歩行ピッチ (BPM)',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const Spacer(),
-                        // Use state confidence for indicator
-                        if (calculatedBpmFromRaw != null &&
-                            calculatedBpmFromRaw! > 0) ...[
-                          Row(
-                            children: [
-                              Text(
-                                '信頼性: ',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.grey.shade700,
-                                ),
-                              ),
-                              _buildReliabilityIndicator(
-                                  finalConf), // Use state variable
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          // Use calculatedBpmFromRaw (already updated in state)
-                          calculatedBpmFromRaw != null &&
-                                  calculatedBpmFromRaw! > 0
-                              ? '${calculatedBpmFromRaw!.toStringAsFixed(1)}'
-                              : '--',
-                          style: const TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.indigo,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        const Text(
-                          'BPM',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.indigo,
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          // Use method from state debugInfo
-                          '($method)',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade600,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: Text(
-                        // Use null-safe access for latestData
-                        latestData?.timestamp != null
-                            ? '最終更新: ${DateFormat('HH:mm:ss').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}' // Safe now because of ?. check
-                            : '',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // 加速度センサー情報 Card
-            Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.speed, color: Colors.orange),
-                        SizedBox(width: 8),
-                        Text(
-                          '加速度情報',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        // Use null-safe access
-                        _buildAccelDataColumn(
-                            'X軸', latestData?.accX, Colors.red),
-                        _buildAccelDataColumn(
-                            'Y軸', latestData?.accY, Colors.green),
-                        _buildAccelDataColumn(
-                            'Z軸', latestData?.accZ, Colors.blue),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Text(
-                          '合成加速度:',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          // Use null-safe access and check
-                          latestData?.magnitude != null
-                              ? '${latestData!.magnitude!.toStringAsFixed(3)} G' // Safe now
-                              : '-- G',
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // 歩行ピッチ計算の詳細 Card
-            Card(
-              elevation: 4,
-              color: Colors.amber.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.analytics, color: Colors.amber),
-                        SizedBox(width: 8),
-                        Text(
-                          '歩行解析詳細',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    // Use debugInfo from state
-                    _buildInfoRow('検出方法:', method), // Already safe
-                    _buildInfoRow(
-                        '直接検出 BPM (右足):',
-                        debugInfo['right_foot_bpm'] != null &&
-                                debugInfo['right_foot_bpm'] > 0
-                            ? '${debugInfo['right_foot_bpm'].toStringAsFixed(1)} BPM'
-                            : '-- BPM'),
-                    _buildInfoRow('直接検出 信頼度:',
-                        '${(directConf * 100).toStringAsFixed(1)}%'),
-                    _buildInfoRow(
-                        '周波数分析 BPM:',
-                        debugInfo['freq_bpm'] != null &&
-                                debugInfo['freq_bpm'] > 0
-                            ? '${debugInfo['freq_bpm'].toStringAsFixed(1)} BPM'
-                            : '-- BPM'),
-                    _buildInfoRow('周波数分析 信頼度:',
-                        '${(freqConf * 100).toStringAsFixed(1)}%'),
-                    _buildInfoRow('最終 BPM:',
-                        '${(debugInfo['final_bpm'] ?? 0.0).toStringAsFixed(1)} BPM'),
-                    _buildInfoRow('最終 信頼度:',
-                        '${(finalConf * 100).toStringAsFixed(1)}%'), // Use finalConf derived from state
-                    if (debugInfo['median_bpm'] != null)
-                      _buildInfoRow('平滑化 BPM (Median):',
-                          '${(debugInfo['median_bpm']).toStringAsFixed(1)} BPM'),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 信頼性インジケーターを構築
-  Widget _buildReliabilityIndicator(double reliability) {
-    final int filledStars = (reliability * 5).round();
-    return Row(
-      children: List.generate(5, (index) {
-        return Icon(
-          index < filledStars ? Icons.star : Icons.star_border,
-          color: Colors.amber,
-          size: 16,
-        );
-      }),
-    );
-  }
+  // 信頼性インジケーターを構築 (未使用のため削除)
 
   // 加速度データの列を構築
   Widget _buildAccelDataColumn(String title, double? value, Color color) {
@@ -1588,6 +1346,36 @@ class _BLEHomePageState extends State<BLEHomePage> {
         ),
         Text(
           "G",
+          style: TextStyle(
+            fontSize: 12,
+            color: color.withOpacity(0.7),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ジャイロセンサーデータの列を構築
+  Widget _buildGyroDataColumn(String title, double? value, Color color) {
+    return Column(
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value != null ? value.toStringAsFixed(3) : "--",
+          style: TextStyle(
+            fontSize: 16,
+            color: color,
+          ),
+        ),
+        Text(
+          "deg/s",
           style: TextStyle(
             fontSize: 12,
             color: color.withOpacity(0.7),
@@ -1829,7 +1617,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                               Icon(Icons.timeline, color: Colors.blue),
                               SizedBox(width: 8),
                               Text(
-                                'BPM推移グラフ',
+                                'SPM推移グラフ', // ラベル変更
                                 style: TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.bold,
@@ -1847,34 +1635,44 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   leftTitles: AxisTitles(
                                     sideTitles: SideTitles(
                                       showTitles: true,
-                                      reservedSize: 30,
+                                      reservedSize: 40,
+                                      getTitlesWidget: (value, meta) =>
+                                          Text(value.toInt().toString()),
                                     ),
                                   ),
                                   bottomTitles: AxisTitles(
                                     sideTitles: SideTitles(
                                       showTitles: true,
                                       reservedSize: 30,
+                                      interval: 5000, // 5秒ごと
+                                      getTitlesWidget: (value, meta) {
+                                        final dt =
+                                            DateTime.fromMillisecondsSinceEpoch(
+                                                value.toInt());
+                                        return Text(
+                                            DateFormat('HH:mm:ss').format(dt));
+                                      },
                                     ),
                                   ),
                                   topTitles: AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
+                                      sideTitles:
+                                          SideTitles(showTitles: false)),
                                   rightTitles: AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
+                                      sideTitles:
+                                          SideTitles(showTitles: false)),
                                 ),
                                 borderData: FlBorderData(show: true),
-                                minX: 0,
+                                minX: 0, // 実験開始からの時間 or レコード数
                                 maxX: bpmSpots.length.toDouble(),
                                 minY: minY,
                                 maxY: maxY,
                                 lineBarsData: [
-                                  // 検出BPM
+                                  // 検出SPM
                                   LineChartBarData(
                                     spots: bpmSpots,
-                                    isCurved: true,
+                                    isCurved: false,
                                     color: Colors.blue,
-                                    barWidth: 3,
+                                    barWidth: 2,
                                     dotData: FlDotData(show: false),
                                   ),
                                   // ターゲットBPM (直線)
@@ -1884,7 +1682,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                       FlSpot(bpmSpots.length.toDouble(),
                                           currentMusicBPM),
                                     ],
-                                    isCurved: false,
                                     color: Colors.red.withOpacity(0.5),
                                     barWidth: 2,
                                     dotData: FlDotData(show: false),
@@ -1901,7 +1698,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   const SizedBox(height: 16),
                 ],
 
-                // データレコード表示
+                // データレコード表示 (SPMを表示するように修正)
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(16.0),
@@ -1986,7 +1783,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   children: [
                                     Text(
                                       "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / " +
-                                          "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} BPM",
+                                          "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} SPM", // 単位変更
                                       style: const TextStyle(fontSize: 13),
                                     ),
                                     Text(
@@ -1998,8 +1795,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
                               );
                             }).toList(),
                           ),
-
-                        // スクロール可能なエリアの下部に十分なスペースを確保
                         const SizedBox(height: 50),
                       ],
                     ),
@@ -2013,93 +1808,348 @@ class _BLEHomePageState extends State<BLEHomePage> {
     );
   }
 
-  // RAWデータ処理メソッド (状態変数を更新するように修正)
-  void _processRawData(M5SensorData sensorData) {
-    // X軸加速度データがなければ処理中断 (変更なし)
-    if (sensorData.accX == null) {
-      return;
-    }
-
-    // magnitude がない場合は計算する (変更なし)
-    double? magnitude = sensorData.magnitude;
-    if (sensorData.accY != null && sensorData.accZ != null) {
-      magnitude ??= math.sqrt(sensorData.accX! * sensorData.accX! +
-          sensorData.accY! * sensorData.accY! +
-          sensorData.accZ! * sensorData.accZ!);
-    }
-
-    // グラフデータ更新 (変更なし)
-    if (showRawDataGraph && magnitude != null) {
-      // ... (グラフデータ更新処理は変更なし) ...
-      final x = magnitudeSpots.length.toDouble();
-      accXSpots.add(FlSpot(x, sensorData.accX!));
-      if (sensorData.accY != null) accYSpots.add(FlSpot(x, sensorData.accY!));
-      if (sensorData.accZ != null) accZSpots.add(FlSpot(x, sensorData.accZ!));
-      magnitudeSpots.add(FlSpot(x, magnitude));
-
-      while (magnitudeSpots.length > maxGraphPoints) {
-        magnitudeSpots.removeAt(0);
-        if (accXSpots.isNotEmpty) accXSpots.removeAt(0);
-        if (accYSpots.isNotEmpty) accYSpots.removeAt(0);
-        if (accZSpots.isNotEmpty) accZSpots.removeAt(0);
-      }
-      for (int i = 0; i < magnitudeSpots.length; i++) {
-        if (i < accXSpots.length)
-          accXSpots[i] = FlSpot(i.toDouble(), accXSpots[i].y);
-        if (i < accYSpots.length)
-          accYSpots[i] = FlSpot(i.toDouble(), accYSpots[i].y);
-        if (i < accZSpots.length)
-          accZSpots[i] = FlSpot(i.toDouble(), accZSpots[i].y);
-        magnitudeSpots[i] = FlSpot(i.toDouble(), magnitudeSpots[i].y);
-      }
-    }
-
-    // 新しい歩行ピッチ検出器を呼び出す
-    final result = cadenceDetector.addSensorData(sensorData);
-    double newBPM = result['bpm'] ?? 0.0;
-    double confidence = result['confidence'] ?? 0.0;
-    Map<String, dynamic> debugInfo = result['debug_info'] ?? {};
-
-    // Update state variables
-    if (mounted) {
-      setState(() {
-        _currentCalculatedBpm = newBPM; // Store the latest BPM calculation
-        _currentConfidence = confidence;
-        _currentDebugInfo = debugInfo;
-
-        // Update the UI display variable
-        calculatedBpmFromRaw = (newBPM > 0 && confidence > 0.1) ? newBPM : null;
-      });
-    }
-
-    // 詳細なデバッグ情報があれば表示 (必要に応じてコメント解除)
-    /*
-    if (debugInfo.isNotEmpty) {
-       print('--- 歩行検出デバッグ --- (' + DateFormat('HH:mm:ss.SSS').format(DateTime.now()) + ')');
-       print('方法: ${debugInfo['method']}');
-       print('直接BPM(右): ${debugInfo['right_foot_bpm']?.toStringAsFixed(1)} (${(debugInfo['confidence']?['direct'] * 100).toStringAsFixed(1)}%)');
-       print('周波数BPM: ${debugInfo['freq_bpm']?.toStringAsFixed(1)} (${(debugInfo['confidence']?['freq'] * 100).toStringAsFixed(1)}%)');
-       print('最終BPM: ${debugInfo['final_bpm']?.toStringAsFixed(1)} (${(debugInfo['confidence']?['final'] * 100).toStringAsFixed(1)}%)');
-       if (debugInfo['median_bpm'] != null) {
-           print('平滑化BPM: ${debugInfo['median_bpm'].toStringAsFixed(1)}');
-           print('BPM履歴: ${debugInfo['history']}');
-       }
-       print('-------------------------');
-    }
-    */
-
-    // 実験モードで記録中ならデータを記録 (呼び出し場所を変更)
-    // _recordExperimentData() の中で cadenceDetector.addSensorData が呼ばれるのでここでは不要
+  // 実験モードのUI (SPM表示に合わせる)
+  Widget _buildExperimentModeUI() {
+    return Column(
+      children: [
+        // 実験設定カード (変更なし)
+        Card(
+            // ...
+            ),
+        // 残り時間表示 (変更なし)
+        if (isRecording && experimentTimer != null) ...[
+          // ...
+        ],
+        // スクロール可能なデータ表示部分
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                // --- SPMトラッキンググラフ ---
+                if (bpmSpots.isNotEmpty) ...[
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Icon(Icons.timeline, color: Colors.blue),
+                              SizedBox(width: 8),
+                              Text(
+                                'SPM推移グラフ', // ラベル変更
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            height: 200,
+                            child: LineChart(
+                              LineChartData(
+                                gridData: FlGridData(show: true),
+                                titlesData: FlTitlesData(
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 40,
+                                      getTitlesWidget: (value, meta) =>
+                                          Text(value.toInt().toString()),
+                                    ),
+                                  ),
+                                  bottomTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 30,
+                                      // X軸は経過時間 or レコード数で表示
+                                      // getTitlesWidget: ...
+                                    ),
+                                  ),
+                                  topTitles: AxisTitles(
+                                      sideTitles:
+                                          SideTitles(showTitles: false)),
+                                  rightTitles: AxisTitles(
+                                      sideTitles:
+                                          SideTitles(showTitles: false)),
+                                ),
+                                borderData: FlBorderData(show: true),
+                                minX: 0, // 実験開始からの時間 or レコード数
+                                maxX: bpmSpots.length.toDouble(),
+                                minY: minY,
+                                maxY: maxY,
+                                lineBarsData: [
+                                  // 検出SPM
+                                  LineChartBarData(
+                                    spots: bpmSpots,
+                                    isCurved: false,
+                                    color: Colors.blue,
+                                    barWidth: 2,
+                                    dotData: FlDotData(show: false),
+                                  ),
+                                  // ターゲットBPM (直線)
+                                  LineChartBarData(
+                                    spots: [
+                                      FlSpot(0, currentMusicBPM),
+                                      FlSpot(bpmSpots.length.toDouble(),
+                                          currentMusicBPM),
+                                    ],
+                                    color: Colors.red.withOpacity(0.5),
+                                    barWidth: 2,
+                                    dotData: FlDotData(show: false),
+                                    dashArray: [5, 5],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                // データレコード表示 (SPMを表示するように修正)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // ... (ヘッダー部分は変更なし)
+                        if (experimentRecords.isNotEmpty) ...[
+                          // ... (統計情報表示は変更なし)
+                        ],
+                        const SizedBox(height: 8),
+                        if (experimentRecords.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Text("まだデータがありません"),
+                          )
+                        else
+                          Column(
+                            children: experimentRecords.reversed
+                                .take(5)
+                                .map((record) {
+                              return ListTile(
+                                dense: true,
+                                title: Text(
+                                  "時刻: ${DateFormat('HH:mm:ss.SSS').format(record.timestamp)}",
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / " +
+                                          "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} SPM", // 単位変更
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                    // 加速度データ表示は変更なし
+                                    Text(
+                                      "加速度: X=${record.accX?.toStringAsFixed(3) ?? 'N/A'}, Y=${record.accY?.toStringAsFixed(3) ?? 'N/A'}, Z=${record.accZ?.toStringAsFixed(3) ?? 'N/A'}",
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        const SizedBox(height: 50),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
-  Color _getReliabilityColor(double reliabilityScore) {
-    if (reliabilityScore > 0.7) {
-      return Colors.green;
-    } else if (reliabilityScore > 0.5) {
-      return Colors.yellow;
-    } else {
-      return Colors.red;
-    }
+  // データモニターモードのUI
+  Widget _buildDataMonitorModeUI() {
+    // アクセラレーショングラフ用のデータ (変更なし)
+    // ...
+
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'リアルタイムデータ',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+
+            // --- 歩行ピッチ (SPM) 表示カード ---
+            Card(
+              elevation: 4,
+              color: Colors.lightBlue.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.directions_walk,
+                            color: Colors.blue), // アイコン変更
+                        const SizedBox(width: 8),
+                        const Text(
+                          '歩行ピッチ (SPM)', // ラベル変更
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          _displaySpm > 0
+                              ? _displaySpm.toStringAsFixed(1)
+                              : '--',
+                          style: const TextStyle(
+                            fontSize: 36,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.indigo,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'SPM', // 単位変更
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.indigo,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '歩数: $_displayStepCount',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text(
+                        latestData?.timestamp != null
+                            ? '最終センサー更新: ${DateFormat('HH:mm:ss.SSS').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}'
+                            : '',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // --- 加速度情報カード (変更なし) ---
+            Card(
+                // ... (加速度表示部分は変更なし)
+                ),
+            const SizedBox(height: 16),
+
+            // --- SPM推移グラフ ---
+            if (bpmSpots.length > 1) // データが2点以上あれば表示
+              Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.timeline, color: Colors.purple),
+                          SizedBox(width: 8),
+                          Text(
+                            'SPM推移グラフ',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 200,
+                        child: LineChart(
+                          LineChartData(
+                            gridData: FlGridData(show: true),
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (value, meta) =>
+                                      Text(value.toInt().toString()),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 30,
+                                  interval: 5000, // 5秒ごと
+                                  getTitlesWidget: (value, meta) {
+                                    final dt =
+                                        DateTime.fromMillisecondsSinceEpoch(
+                                            value.toInt());
+                                    return Text(
+                                        DateFormat('HH:mm:ss').format(dt));
+                                  },
+                                ),
+                              ),
+                              topTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            borderData: FlBorderData(show: true),
+                            minX: bpmSpots.first.x,
+                            maxX: bpmSpots.last.x,
+                            minY: minY,
+                            maxY: maxY,
+                            lineBarsData: [
+                              LineChartBarData(
+                                spots: bpmSpots,
+                                isCurved: false,
+                                color: Colors.purple,
+                                barWidth: 2,
+                                dotData: FlDotData(show: false),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   // 指定したBPMに最も近いテンポプリセットを見つける
