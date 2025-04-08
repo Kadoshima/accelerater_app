@@ -2,8 +2,19 @@ import 'dart:collection';
 import 'dart:math' as math;
 import '../models/sensor_data.dart';
 
+/// 内部データクラス: ステップイベント
+class _StepEvent {
+  final int timestamp; // ミリ秒
+  final double peakValue;
+  final double valleyValue;
+  final double reliability;
+
+  _StepEvent(
+      this.timestamp, this.peakValue, this.valleyValue, this.reliability);
+}
+
 /// 足首センサーデータから歩行ステップとピッチ(SPM)を検出するサービス
-/// アルゴリズム仕様に基づき、合成加速度 + ローパスフィルタ + 動的閾値を使用
+/// アルゴリズム仕様に基づき、合成加速度 + ローパスフィルタ + 動的閾値 + スライドウィンドウを使用
 class GaitAnalysisService {
   // --- 設定パラメータ ---
   final double samplingRate; // Hz (例: 50.0)
@@ -12,7 +23,8 @@ class GaitAnalysisService {
   final double maxStepIntervalSec; // 最大ステップ間隔 (秒)
   final double minDynamicThreshold; // 動的閾値の下限 (G)
   final double thresholdFactor; // 動的閾値計算係数 (例: 0.6 = 前回のピークの60%)
-  final int spmCalculationWindow; // SPM計算に使うステップ数
+  final double windowSizeSec; // SPM計算用ウィンドウサイズ (秒)
+  final double slideSizeSec; // ウィンドウスライド幅 (秒)
   final double minSpm; // SPMの下限
   final double maxSpm; // SPMの上限
   final int historyBufferSize; // フィルタ/ピーク検出に必要なバッファサイズ
@@ -22,16 +34,17 @@ class GaitAnalysisService {
   // --- 内部状態変数 ---
   final Queue<M5SensorData> _sensorHistory; // 最近のセンサーデータ履歴
   final Queue<double> _filteredMagnitudeBuffer; // フィルタリング後の合成加速度バッファ
+  final List<_StepEvent> _stepEvents; // すべてのステップイベント履歴
   double _previousFilteredMagnitude = 1.0; // ローパスフィルタの内部状態 (初期値 1G)
   final double _filterAlpha; // ローパスフィルタ係数
 
-  final List<int> _stepTimestamps; // 検出されたステップのタイムスタンプ (ミリ秒)
   double _lastPeakMagnitude = 1.2; // 最後に検出されたピークの振幅 (初期値: 静止+α)
   double _dynamicThreshold; // 現在の動的閾値
   bool _isPotentialPeak = false; // ピーク候補フラグ
   double _valleyAfterPeak = double.maxFinite; // ピーク後の谷の深さ
   int _lastStepTimestamp = 0; // 最後のステップのタイムスタンプ
   double _lastValleyValue = 1.0; // 最後に検出された谷の値
+  int _lastWindowUpdateTime = 0; // 最後にウィンドウ計算した時刻
 
   // --- 結果 ---
   int _stepCount = 0;
@@ -51,14 +64,24 @@ class GaitAnalysisService {
   /// 直近N個のステップ間隔（ミリ秒）を取得するメソッド
   List<double> getLatestStepIntervals({int count = 5}) {
     List<double> intervals = [];
-    if (_stepTimestamps.length >= 2) {
-      int numIntervals = math.min(count, _stepTimestamps.length - 1);
-      for (int i = _stepTimestamps.length - 1;
-          i >= _stepTimestamps.length - numIntervals;
+    if (_stepEvents.length >= 2) {
+      // 使用する間隔の数を計算（最大count個、ただし少なくとも1つのステップイベント間隔が必要）
+      int numIntervals = math.min(count, _stepEvents.length - 1);
+
+      // 最新のステップから順に間隔を計算
+      for (int i = _stepEvents.length - 1;
+          i >= _stepEvents.length - numIntervals;
           i--) {
+        // 現在のステップと一つ前のステップの間隔を計算
         double interval =
-            (_stepTimestamps[i] - _stepTimestamps[i - 1]).toDouble();
-        intervals.insert(0, interval); // 逆順で追加されたものを元に戻す
+            (_stepEvents[i].timestamp - _stepEvents[i - 1].timestamp)
+                .toDouble();
+
+        // 妥当な間隔のみ追加（非常に長い間隔や短すぎる間隔を除外）
+        if (interval >= minStepIntervalSec * 1000 &&
+            interval <= maxStepIntervalSec * 1000) {
+          intervals.insert(0, interval); // 古い順に追加
+        }
       }
     }
     return intervals;
@@ -67,24 +90,30 @@ class GaitAnalysisService {
   /// コンストラクタ
   GaitAnalysisService({
     this.samplingRate = 50.0,
-    this.lowPassCutoffFreq = 2.5, // 2.5Hzカットオフ（以前は5Hz）
+    this.lowPassCutoffFreq = 1.5, // 1.5Hzカットオフ（以前は2.5Hz, 5Hz）
     this.minStepIntervalSec = 0.3, // 300ms (200 SPM)
     this.maxStepIntervalSec = 1.5, // 1500ms (40 SPM)
-    this.minDynamicThreshold = 0.3, // 閾値の下限 0.3G（静止状態の1Gより低い値）- 以前は0.45G
-    this.thresholdFactor = 0.4, // ピークの40%を閾値に - 以前は0.5
-    this.spmCalculationWindow = 5, // 直近5ステップでSPM計算
+    this.minDynamicThreshold =
+        0.25, // 閾値の下限 0.25G（静止状態の1Gより低い値）- 以前は0.3G, 0.45G
+    this.thresholdFactor = 0.35, // ピークの35%を閾値に - 以前は0.4, 0.5
+    this.windowSizeSec = 20.0, // 20秒ウィンドウ
+    this.slideSizeSec = 2.0, // 2秒スライド
     this.minSpm = 40.0,
     this.maxSpm = 200.0,
     this.historyBufferSize = 5, // フィルタ/ピーク検出に最低5サンプル使用
-    this.minPeakValleyDiff = 0.1, // ピークと谷の差が0.1G以上必要 - 以前は0.15G
-    this.minValleyToPeakDiff = 0.08, // 谷から次のピークまでの上昇量が0.08G以上必要 - 以前は0.12G
+    this.minPeakValleyDiff = 0.08, // ピークと谷の差が0.08G以上必要 - 以前は0.1G, 0.15G
+    this.minValleyToPeakDiff =
+        0.05, // 谷から次のピークまでの上昇量が0.05G以上必要 - 以前は0.08G, 0.12G
   })  : _filterAlpha = _calculateFilterAlpha(samplingRate, lowPassCutoffFreq),
         _dynamicThreshold = minDynamicThreshold, // 初期閾値は下限値に設定
         _sensorHistory = Queue<M5SensorData>(),
         _filteredMagnitudeBuffer = Queue<double>(),
-        _stepTimestamps = [] {
-    print(
-        'GaitAnalysisService初期化: フィルタα=${_filterAlpha.toStringAsFixed(3)}, 閾値=${minDynamicThreshold}G');
+        _stepEvents = [] {
+    print('GaitAnalysisService初期化(スライドウィンドウ方式): '
+        'フィルタα=${_filterAlpha.toStringAsFixed(3)}, '
+        '閾値=${minDynamicThreshold}G, '
+        'ウィンドウ=${windowSizeSec}秒, '
+        'スライド=${slideSizeSec}秒');
   }
 
   /// フィルタ係数アルファを計算
@@ -95,7 +124,6 @@ class GaitAnalysisService {
   }
 
   /// 新しいセンサーデータを処理
-  /// M5SensorDataオブジェクトを受け取るように変更
   void addSensorData(M5SensorData sensorData) {
     _sampleCount++;
 
@@ -118,15 +146,35 @@ class GaitAnalysisService {
     // 100サンプルごとにデバッグ情報表示
     if (_sampleCount % 100 == 0) {
       print(
-          'GaitAnalysis状態: サンプル数=$_sampleCount, 現在閾値=${_dynamicThreshold.toStringAsFixed(3)}G, SPM=$_currentSpm, ステップ数=$_stepCount');
+          'GaitAnalysis状態: サンプル数=$_sampleCount, 現在閾値=${_dynamicThreshold.toStringAsFixed(3)}G, '
+          'SPM=$_currentSpm, ステップ数=$_stepCount, ステップ履歴=${_stepEvents.length}件');
       print('最新データ: 生=$magnitude, フィルタ後=$currentFilteredMagnitude');
     }
 
     // 3. ステップ検出を実行 (フィルタ後の値とタイムスタンプを使用)
     _detectStep(currentFilteredMagnitude, sensorData.timestamp);
 
-    // 4. 歩行ピッチ(SPM)の計算
-    _calculateSpm();
+    // 4. スライドウィンドウ方式でSPMを計算（slideSizeSec秒ごとに実行）
+    int currentTime = sensorData.timestamp;
+    if (_lastWindowUpdateTime == 0 ||
+        (currentTime - _lastWindowUpdateTime) >= (slideSizeSec * 1000)) {
+      _calculateSpmWithWindow(currentTime);
+      _lastWindowUpdateTime = currentTime;
+    }
+
+    // 5. 古いステップイベントを削除（現在時刻からwindowSizeSec*2秒以上前のもの）
+    _cleanupOldStepEvents(sensorData.timestamp);
+  }
+
+  /// 古いステップイベントの削除
+  void _cleanupOldStepEvents(int currentTimestamp) {
+    if (_stepEvents.isEmpty) return;
+
+    // 現在時刻からwindowSizeSec*2秒より古いイベントを削除
+    int threshold = currentTimestamp - (windowSizeSec.toInt() * 2 * 1000);
+    while (_stepEvents.isNotEmpty && _stepEvents.first.timestamp < threshold) {
+      _stepEvents.removeAt(0);
+    }
   }
 
   /// ローパスフィルタを適用 (1次IIR)
@@ -169,7 +217,8 @@ class GaitAnalysisService {
         _valleyAfterPeak = currentFilteredMag; // ピーク直後の値を谷の初期値とする
 
         print(
-            'Potential peak detected: ${_lastPeakMagnitude.toStringAsFixed(3)} > Thr: ${_dynamicThreshold.toStringAsFixed(3)} @ $timestamp');
+            'Potential peak detected: ${_lastPeakMagnitude.toStringAsFixed(3)} > '
+            'Thr: ${_dynamicThreshold.toStringAsFixed(3)} @ $timestamp');
       }
     } else {
       // すでにピーク候補がある場合、谷を探す
@@ -182,14 +231,17 @@ class GaitAnalysisService {
         double peakValleyDiff = _lastPeakMagnitude - _valleyAfterPeak;
         double valleyToPeakDiff = currentFilteredMag - _valleyAfterPeak;
 
-        print(
-            'Step check: Peak=${_lastPeakMagnitude.toStringAsFixed(3)}, Valley=${_valleyAfterPeak.toStringAsFixed(3)}, Diff=${peakValleyDiff.toStringAsFixed(3)}, ValleyToCurrent=${valleyToPeakDiff.toStringAsFixed(3)}');
+        print('Step check: Peak=${_lastPeakMagnitude.toStringAsFixed(3)}, '
+            'Valley=${_valleyAfterPeak.toStringAsFixed(3)}, '
+            'Diff=${peakValleyDiff.toStringAsFixed(3)}, '
+            'ValleyToCurrent=${valleyToPeakDiff.toStringAsFixed(3)}');
 
-        // 振幅チェック - 条件を少し緩和
+        // 振幅チェック - 条件を緩和
         if (peakValleyDiff < minPeakValleyDiff ||
             valleyToPeakDiff < minValleyToPeakDiff) {
           print(
-              'Step rejected (small amplitude: peak-valley=${peakValleyDiff.toStringAsFixed(3)}, valley-current=${valleyToPeakDiff.toStringAsFixed(3)})');
+              'Step rejected (small amplitude: peak-valley=${peakValleyDiff.toStringAsFixed(3)}, '
+              'valley-current=${valleyToPeakDiff.toStringAsFixed(3)})');
           _isPotentialPeak = false; // フラグリセット
           _valleyAfterPeak = double.maxFinite;
           return; // ステップとしない
@@ -205,32 +257,30 @@ class GaitAnalysisService {
           // 長すぎる間隔の場合、新しい歩行シーケンスとして扱う（ログ表示のみ）
           if (intervalSeconds > maxStepIntervalSec) {
             print(
-                'New sequence likely started (interval: ${intervalSeconds.toStringAsFixed(2)}s > ${maxStepIntervalSec}s)');
+                'New sequence likely started (interval: ${intervalSeconds.toStringAsFixed(2)}s > '
+                '${maxStepIntervalSec}s)');
           }
 
           // ステップ確定！
-          _stepTimestamps.add(timestamp);
           _stepCount++;
-          // _lastPeakMagnitudeはすでに設定済み
           _lastStepTimestamp = timestamp;
-          _lastValleyValue = _valleyAfterPeak; // 最後の谷の値を保存（信頼度計算用）
+          _lastValleyValue = _valleyAfterPeak; // 最後の谷の値を保存
 
           // 信頼度計算 (ピークと谷の差が大きいほど信頼度が高い)
           _reliability = math.min(1.0, peakValleyDiff / 1.0);
 
+          // ステップイベントをリストに追加
+          _stepEvents.add(_StepEvent(
+              timestamp, _lastPeakMagnitude, _valleyAfterPeak, _reliability));
+
           print(
-              'Step confirmed! Count: $_stepCount, Interval: ${intervalSeconds.toStringAsFixed(2)}s, Peak: ${_lastPeakMagnitude.toStringAsFixed(3)}, Valley: ${_valleyAfterPeak.toStringAsFixed(3)}, Reliability: ${(_reliability * 100).toStringAsFixed(1)}%');
-
-          // SPM計算用に古いタイムスタンプを削除（ウィンドウサイズの2倍程度保持）
-          while (_stepTimestamps.length > spmCalculationWindow * 2 + 1) {
-            _stepTimestamps.removeAt(0);
-          }
-
-          // ステップ検出後、すぐにSPMを計算
-          _calculateSpm();
+              'Step confirmed! Count: $_stepCount, Interval: ${intervalSeconds.toStringAsFixed(2)}s, '
+              'Peak: ${_lastPeakMagnitude.toStringAsFixed(3)}, Valley: ${_valleyAfterPeak.toStringAsFixed(3)}, '
+              'Reliability: ${(_reliability * 100).toStringAsFixed(1)}%');
         } else {
           print(
-              'Step rejected (too short interval: ${intervalSeconds.toStringAsFixed(2)}s < ${minStepIntervalSec}s)');
+              'Step rejected (too short interval: ${intervalSeconds.toStringAsFixed(2)}s < '
+              '${minStepIntervalSec}s)');
         }
 
         // ステップ判定処理が終わったらフラグと谷をリセット
@@ -240,57 +290,37 @@ class GaitAnalysisService {
     }
   }
 
-  /// 歩行ピッチ(SPM)を計算
-  void _calculateSpm() {
-    // ステップが2つ未満なら計算不可
-    if (_stepTimestamps.length < 2) {
+  /// スライドウィンドウ方式での歩行ピッチ(SPM)計算
+  void _calculateSpmWithWindow(int currentTimestamp) {
+    // ウィンドウサイズ内のステップイベント数をカウント
+    int windowStartTime = currentTimestamp - (windowSizeSec * 1000).toInt();
+
+    // 現在のウィンドウ内のステップイベントを抽出
+    List<_StepEvent> windowEvents = _stepEvents
+        .where((event) => event.timestamp >= windowStartTime)
+        .toList();
+
+    if (windowEvents.isEmpty) {
+      // ウィンドウ内にステップがない場合はSPMをゼロに
       _currentSpm = 0.0;
+      _reliability = 0.0;
+      print('Window empty - SPM set to 0');
       return;
     }
 
-    // 計算に使う最新のステップ数（ただし最低1インターバル必要）
-    int stepsToConsider =
-        math.min(spmCalculationWindow, _stepTimestamps.length - 1);
-    if (stepsToConsider < 1) {
-      _currentSpm = 0.0;
-      return;
-    }
+    // 直接ウィンドウ内のステップ数をカウントし、SPMを計算
+    int stepCount = windowEvents.length;
+    double windowSizeMinutes = windowSizeSec / 60.0;
 
-    // 直近Nステップの間隔をリストアップ (ミリ秒)
-    List<double> intervals = [];
-    for (int i = _stepTimestamps.length - 1;
-        i >= _stepTimestamps.length - stepsToConsider;
-        i--) {
-      double interval =
-          (_stepTimestamps[i] - _stepTimestamps[i - 1]).toDouble();
-      // 妥当な範囲の間隔のみを使用
-      if (interval >= minStepIntervalSec * 1000 &&
-          interval <= maxStepIntervalSec * 1000) {
-        intervals.add(interval);
-      }
-    }
+    // SPMを計算： ステップ数 ÷ ウィンドウサイズ（分）
+    _currentSpm = (stepCount / windowSizeMinutes).clamp(minSpm, maxSpm);
 
-    if (intervals.isEmpty) {
-      // 有効な間隔がない場合、長時間ステップがなければSPMを0にする
-      _resetSpmIfInactive();
-      return;
-    }
+    // 信頼度は最新のステップの信頼度を使用
+    _reliability = windowEvents.last.reliability;
 
-    // 平均間隔を計算 (ミリ秒)
-    double averageIntervalMillis =
-        intervals.reduce((a, b) => a + b) / intervals.length;
-
-    // SPMに変換してクリッピング
-    if (averageIntervalMillis > 0) {
-      _currentSpm = (60000.0 / averageIntervalMillis).clamp(minSpm, maxSpm);
-      print(
-          'SPM updated: ${_currentSpm.toStringAsFixed(1)} (based on ${intervals.length} intervals, avg interval=${averageIntervalMillis.toStringAsFixed(1)}ms)');
-    } else {
-      _currentSpm = 0.0; // 平均間隔が0ならSPMも0
-    }
-
-    // アイドル状態ならSPMを0にする
-    _resetSpmIfInactive();
+    print(
+        'SPM updated: ${_currentSpm.toStringAsFixed(1)} (window size: ${windowSizeSec}s, '
+        'steps in window: $stepCount, effective SPM: ${(stepCount / windowSizeMinutes).toStringAsFixed(1)})');
   }
 
   /// 長時間ステップがない場合にSPMをリセットするヘルパー関数
@@ -304,12 +334,10 @@ class GaitAnalysisService {
           print(
               'Resetting SPM to 0 due to inactivity ($timeSinceLastStepSec sec)');
           _currentSpm = 0.0;
-          // 古いタイムスタンプをクリアする
-          // _stepTimestamps.clear();
         }
       }
-    } else if (_stepTimestamps.isEmpty && _currentSpm != 0.0) {
-      // 最初のステップもまだないのにSPMが0でない場合はリセット
+    } else if (_stepEvents.isEmpty && _currentSpm != 0.0) {
+      // ステップイベントがまだないのにSPMが0でない場合はリセット
       _currentSpm = 0.0;
     }
   }
@@ -319,12 +347,13 @@ class GaitAnalysisService {
     _sensorHistory.clear();
     _filteredMagnitudeBuffer.clear();
     _previousFilteredMagnitude = 1.0; // フィルタ状態リセット
-    _stepTimestamps.clear();
+    _stepEvents.clear();
     _lastPeakMagnitude = 1.2; // ピーク振幅リセット
     _dynamicThreshold = minDynamicThreshold; // 閾値リセット
     _isPotentialPeak = false;
     _valleyAfterPeak = double.maxFinite;
     _lastStepTimestamp = 0;
+    _lastWindowUpdateTime = 0;
     _stepCount = 0;
     _currentSpm = 0.0;
     _reliability = 0.0;
