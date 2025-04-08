@@ -14,6 +14,7 @@ import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
 import 'package:crypto/crypto.dart' as crypto;
 import 'dart:convert' show utf8, base64; // base64 エンコーディング用
 import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
+import 'package:http/http.dart' as http;
 
 // 独自モジュール
 import 'models/sensor_data.dart';
@@ -23,6 +24,18 @@ import 'services/metronome.dart';
 void main() async {
   // 環境変数の読み込み
   await dotenv.load(fileName: ".env");
+
+  // 環境変数の読み込み確認
+  print('--- main関数での環境変数読み込み確認 ---');
+  print('AZURE_STORAGE_ACCOUNT: ${dotenv.env['AZURE_STORAGE_ACCOUNT']}');
+  if (dotenv.env['AZURE_SAS_TOKEN'] != null) {
+    print(
+        'AZURE_SAS_TOKEN: ${dotenv.env['AZURE_SAS_TOKEN']!.substring(0, 20)}...');
+  } else {
+    print('AZURE_SAS_TOKEN: null');
+  }
+  print('AZURE_CONTAINER_NAME: ${dotenv.env['AZURE_CONTAINER_NAME']}');
+  print('--------------------------------------');
 
   // アプリ起動時にFlutterBluePlusを初期化
   if (Platform.isAndroid) {
@@ -212,6 +225,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
   double? calculatedBpmFromRaw;
 
   // Azure Blob Storage接続情報
+  String get azureStorageAccount =>
+      dotenv.env['AZURE_STORAGE_ACCOUNT'] ?? 'hagiharatest';
+  String get azureSasToken => dotenv.env['AZURE_SAS_TOKEN'] ?? '';
   String get azureConnectionString =>
       dotenv.env['AZURE_CONNECTION_STRING'] ?? '';
   String get containerName =>
@@ -435,18 +451,46 @@ class _BLEHomePageState extends State<BLEHomePage> {
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')} GMT';
   }
 
-  // Azure Blob Storage の共有キー認証ヘッダを作成
-  String _createAuthorizationHeader(String stringToSign, String accountKey) {
-    final keyBytes = base64.decode(accountKey);
-    final hmacSha256 = crypto.Hmac(crypto.sha256, keyBytes);
-    final stringToSignBytes = utf8.encode(stringToSign);
-    final signature = hmacSha256.convert(stringToSignBytes);
-    return base64.encode(signature.bytes);
-  }
-
-  // Azure Blob Storageにファイルをアップロード（SAS URL方式）
+  // Azure Blob Storageにファイルをアップロード（複数の接続方法を試行）
   Future<void> _uploadToAzure(String filePath, String blobName) async {
+    // --- デバッグ用ハードコード ---
+    const String hardcodedConnectionString =
+        'BlobEndpoint=https://hagiharatest.blob.core.windows.net/;QueueEndpoint=https://hagiharatest.queue.core.windows.net/;FileEndpoint=https://hagiharatest.file.core.windows.net/;TableEndpoint=https://hagiharatest.table.core.windows.net/;SharedAccessSignature=sv=2024-11-04&ss=bfqt&srt=sco&sp=rwdlacupiytfx&se=2025-08-08T13:00:17Z&st=2025-04-07T05:00:17Z&spr=https,http&sig=j7yyunF0c%2FukvQtCwHmgcErI0KyYlco9AhaALYao6xk%3D';
+    String? hardcodedSasToken;
+    final hcSasMatch = RegExp(r'SharedAccessSignature=([^;]+)')
+        .firstMatch(hardcodedConnectionString);
+    if (hcSasMatch != null && hcSasMatch.groupCount >= 1) {
+      hardcodedSasToken = hcSasMatch.group(1);
+    }
+    const String hcAccountName = 'hagiharatest';
+    const String hcContainerName = 'healthcaredata'; // 新しいコンテナ名
+    print('--- ハードコードされた接続情報を使用 --- ');
+    // --- デバッグ用ハードコードここまで ---
+
     try {
+      // 環境変数の代わりにハードコード値を使用
+      print('--- 使用する接続情報 --- ');
+      print('AZURE_STORAGE_ACCOUNT: $hcAccountName');
+      if (hardcodedConnectionString.isNotEmpty) {
+        final int maxConnLength = hardcodedConnectionString.length > 50
+            ? 50
+            : hardcodedConnectionString.length;
+        print(
+            '接続文字列 (ハードコード): ${hardcodedConnectionString.substring(0, maxConnLength)}...');
+      } else {
+        print('接続文字列 (ハードコード): 空');
+      }
+      if (hardcodedSasToken != null && hardcodedSasToken.isNotEmpty) {
+        final int maxSasLength =
+            hardcodedSasToken.length > 20 ? 20 : hardcodedSasToken.length;
+        print(
+            'SASトークン (ハードコード): ${hardcodedSasToken.substring(0, maxSasLength)}...');
+      } else {
+        print('SASトークン (ハードコード): nullまたは空');
+      }
+      print('コンテナ名: $hcContainerName');
+      print('------------------------');
+
       File file = File(filePath);
       if (!await file.exists()) {
         print('アップロードファイルが見つかりません: $filePath');
@@ -459,48 +503,128 @@ class _BLEHomePageState extends State<BLEHomePage> {
       final content = await file.readAsBytes();
       print('ファイル読み込み完了: ${content.length} バイト');
 
+      // React参考コードのように実装
       try {
-        // SAS URL を使用してAzureストレージクライアントを初期化
-        final storage =
-            azblob.AzureStorage.parse(azureConnectionString); // 接続文字列方式に変更
-        print('Azure Storage接続成功 (接続文字列)');
+        print('React参考コード方式でのアップロード試行');
 
-        // SAS URLではコンテナ名を含めてアップロード
-        final fullBlobPath = '$containerName/$blobName';
-        print('アップロード先: $fullBlobPath');
+        // SASトークンを正しく整形（先頭に?がなければ追加）
+        String sasToken = hardcodedSasToken ?? '';
+        if (!sasToken.startsWith('?') && !sasToken.isEmpty) {
+          sasToken = '?' + sasToken;
+        }
 
-        // ファイルをアップロード
-        await storage.putBlob(
-          fullBlobPath,
-          bodyBytes: content,
-          contentType: 'text/csv',
+        // Reactコードと同様にURLを構築
+        final blobUrl = 'https://$hcAccountName.blob.core.windows.net$sasToken';
+        print(
+            'Base Blob URL: ${blobUrl.substring(0, blobUrl.length > 100 ? 100 : blobUrl.length)}...');
+
+        // コンテナクライアント部分をHTTPリクエストとして実装
+        final containerUrl = '$blobUrl&comp=list';
+        print(
+            'コンテナURL確認: ${containerUrl.substring(0, containerUrl.length > 100 ? 100 : containerUrl.length)}...');
+
+        // ブロブのアップロードURL
+        final uploadUrl =
+            'https://$hcAccountName.blob.core.windows.net/$hcContainerName/$blobName$sasToken';
+        print(
+            'アップロードURL: ${uploadUrl.substring(0, uploadUrl.length > 100 ? 100 : uploadUrl.length)}...');
+
+        final headers = {
+          'Content-Type': 'text/csv',
+          'x-ms-blob-type': 'BlockBlob',
+          'x-ms-version': '2021-06-08', // Azure Storage REST APIバージョン
+        };
+
+        final response = await http.put(
+          Uri.parse(uploadUrl),
+          headers: headers,
+          body: content,
         );
 
-        print('Azure Blob Storageへのアップロード成功: $fullBlobPath');
-
-        // 成功通知
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Azureへデータをアップロードしました: $blobName'),
-              duration: const Duration(seconds: 3),
-            ),
-          );
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          print('アップロード成功: $hcContainerName/$blobName');
+          print('ステータスコード: ${response.statusCode}');
+          _showUploadSuccess(blobName);
+          return;
+        } else {
+          final errorDetails =
+              'ステータスコード: ${response.statusCode}, レスポンス: ${response.body}';
+          print('アップロード失敗: $errorDetails');
+          throw Exception('HTTP $errorDetails');
         }
       } catch (e) {
-        final errorDetails = e.toString();
-        print('Azure Blob Storageアップロードエラー: $errorDetails'); // 元のログ
+        print('React方式でのアップロード失敗: $e');
 
-        // AzureStorageExceptionの詳細を出力
-        if (e is azblob.AzureStorageException) {
-          print('>>> AzureStorageException詳細 <<<');
-          print('Status Code: ${e.statusCode}');
-          print('Message: ${e.message}');
-          // print('Details: ${e.details}'); // details プロパティは存在しないためコメントアウト
-          print('---------------------------------');
+        // 別方法を試行 - sasTokenを別の形式で使用
+        try {
+          print('別方法: SASトークン形式変更でのアップロード試行');
+
+          // SASトークンを直接使用（SharedAccessSignatureプレフィックスを削除）
+          String sasToken = hardcodedSasToken ?? '';
+          // SAS トークンから "SharedAccessSignature=" プレフィックスを削除
+          if (sasToken.startsWith('SharedAccessSignature=')) {
+            sasToken = sasToken.substring('SharedAccessSignature='.length);
+          }
+
+          if (sasToken.startsWith('sv=') && !sasToken.startsWith('?')) {
+            sasToken = '?' + sasToken;
+          }
+
+          final uploadUrl =
+              'https://$hcAccountName.blob.core.windows.net/$hcContainerName/$blobName$sasToken';
+          print(
+              '新しいアップロードURL: ${uploadUrl.substring(0, uploadUrl.length > 100 ? 100 : uploadUrl.length)}...');
+
+          final headers = {
+            'Content-Type': 'text/csv',
+            'x-ms-blob-type': 'BlockBlob',
+            'x-ms-version': '2021-06-08',
+          };
+
+          final response = await http.put(
+            Uri.parse(uploadUrl),
+            headers: headers,
+            body: content,
+          );
+
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            print('別方法でのアップロード成功: $hcContainerName/$blobName');
+            print('ステータスコード: ${response.statusCode}');
+            _showUploadSuccess(blobName);
+            return;
+          } else {
+            final errorDetails =
+                'ステータスコード: ${response.statusCode}, レスポンス: ${response.body}';
+            print('別方法でのアップロード失敗: $errorDetails');
+            throw Exception('HTTP $errorDetails');
+          }
+        } catch (altError) {
+          print('別方法でもアップロード失敗: $altError');
+
+          // 最後の手段 - azblob + 接続文字列を試す
+          try {
+            print('最終手段: azblob + 接続文字列を使用してアップロード試行');
+            final storage =
+                azblob.AzureStorage.parse(hardcodedConnectionString);
+
+            final fullBlobPath = '$hcContainerName/$blobName';
+            print('azblob アップロード先: $fullBlobPath');
+
+            await storage.putBlob(
+              fullBlobPath,
+              bodyBytes: content,
+              contentType: 'text/csv',
+            );
+
+            print('azblob方式でのアップロード成功: $fullBlobPath');
+            _showUploadSuccess(blobName);
+            return;
+          } catch (backupError) {
+            print('すべての方法でアップロード失敗: $backupError');
+            throw Exception(
+                'すべてのアップロード方法が失敗しました: 元のエラー: $e, 別方法エラー: $altError, azblob エラー: $backupError');
+          }
         }
-
-        throw Exception('アップロードエラー: $errorDetails'); // エラーを再スロー
       }
     } catch (e) {
       print('Azure Blob Storageへのアップロード処理失敗: $e');
@@ -514,6 +638,18 @@ class _BLEHomePageState extends State<BLEHomePage> {
         );
       }
       throw e;
+    }
+  }
+
+  // アップロード成功時の通知表示
+  void _showUploadSuccess(String blobName) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Azureへデータをアップロードしました: $blobName'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -584,7 +720,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
 
     try {
-      // Azureへアップロード
+      // Azureへアップロード - healthcaredataコンテナを使用
       await _uploadToAzure(filePath, '$experimentFileName.csv');
 
       // データ保存場所を通知
@@ -603,7 +739,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 const SizedBox(height: 16),
                 const Text('保存先:'),
                 Text('• ローカル: $filePath', style: const TextStyle(fontSize: 14)),
-                Text('• Azure: $containerName/$experimentFileName.csv',
+                Text('• Azure: healthcaredata/$experimentFileName.csv',
                     style: const TextStyle(fontSize: 14)),
               ],
             ),
