@@ -3,12 +3,12 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // flutter_blue_plus�
 import 'dart:async'; // Streamの取り扱いに必要
 import 'dart:io';
 import 'dart:convert'; // JSONのデコード用
-import 'package:audioplayers/audioplayers.dart'; // シンプルな音声再生用
+// import 'package:audioplayers/audioplayers.dart'; // シンプルな音声再生用 (just_audioに移行)
 import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
-import 'dart:math';
+import 'dart:math' as math; // Mathクラスを使うためにインポート（as mathで修飾）
 import 'package:flutter/services.dart'; // HapticFeedback用
 import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
 import 'package:crypto/crypto.dart' as crypto;
@@ -18,7 +18,7 @@ import 'package:http/http.dart' as http;
 
 // 独自モジュール
 import 'models/sensor_data.dart';
-import 'utils/step_detector.dart';
+import 'utils/right_foot_cadence_detector.dart'; // 追加
 import 'services/metronome.dart';
 
 void main() async {
@@ -218,11 +218,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
   static const int maxGraphPoints = 50; // グラフの最大ポイント数
   bool showRawDataGraph = true;
 
-  // 独自の歩行検出アルゴリズム用クラス
-  final StepDetector stepDetector = StepDetector();
+  // 新しい右足センサー向け歩行検出器
+  late final RightFootCadenceDetector cadenceDetector; // 追加
 
   // BPMの手動計算結果
   double? calculatedBpmFromRaw;
+
+  // Detectorからの最新結果を保持する状態変数
+  double _currentCalculatedBpm = 0.0;
+  double _currentConfidence = 0.0;
+  Map<String, dynamic> _currentDebugInfo = {};
 
   // Azure Blob Storage接続情報
   String get azureStorageAccount =>
@@ -239,10 +244,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 初期化を非同期で安全に行う
     _initBluetooth();
+
+    cadenceDetector = RightFootCadenceDetector(); // 新しい検出器を初期化
+
     _metronome = Metronome(); // Metronomeインスタンスを作成
     _metronome.initialize().then((_) {
       // Metronomeを初期化
-      // 初期テンポをメトロノームにも設定
       selectedTempo = tempoPresets[1]; // 100 BPM
       _metronome.changeTempo(selectedTempo!.bpm);
       if (mounted) {
@@ -341,18 +348,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // print('加速度データの記録を開始しました: $experimentFileName (100msごと)');
   }
 
-  // 実験データを記録
+  // 実験データを記録 (状態変数を使用するように修正)
   void _recordExperimentData() {
-    // 最新のデータを取得
-    double? detectedBpm = latestData?.bpm;
-    double? reliability = stepDetector.reliabilityScore;
+    // Use the state variables directly
+    double? detectedBpm =
+        _currentCalculatedBpm > 0 ? _currentCalculatedBpm : null;
+    double? reliability = _currentConfidence > 0 ? _currentConfidence : null;
 
-    // BPMデータがない場合、歩行検出から直接取得
-    if (detectedBpm == null && calculatedBpmFromRaw != null) {
-      detectedBpm = calculatedBpmFromRaw;
-    }
+    // If BPM is null from the detector, fallback to the potentially older UI value
+    detectedBpm ??= calculatedBpmFromRaw;
 
-    // 最新の加速度データを取得
     double? accX = latestData?.accX;
     double? accY = latestData?.accY;
     double? accZ = latestData?.accZ;
@@ -369,12 +374,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
       magnitude: magnitude,
     );
 
-    setState(() {
-      experimentRecords.add(record);
-    });
+    if (mounted) {
+      // Ensure mounted check
+      setState(() {
+        experimentRecords.add(record);
 
-    // グラフにプロットするデータも更新
-    _updateGraphData();
+        // Update graph data if BPM is valid
+        if (detectedBpm != null && detectedBpm > 0) {
+          final time = (experimentRecords.length).toDouble();
+          bpmSpots.add(FlSpot(time, detectedBpm));
+
+          // Adjust Y-axis range
+          if (detectedBpm < minY) minY = detectedBpm - 5;
+          if (detectedBpm > maxY) maxY = detectedBpm + 5;
+        }
+      });
+    }
   }
 
   // グラフデータを更新
@@ -1303,8 +1318,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
     );
   }
 
-  // データモニターモードのUIを構築
+  // データモニターモードのUIを構築 (状態変数を使用するように修正)
   Widget _buildDataMonitorMode() {
+    // Use state variables instead of calling detector
+    Map<String, dynamic> debugInfo = _currentDebugInfo;
+    double directConf = debugInfo['confidence']?['direct'] ?? 0.0;
+    double freqConf = debugInfo['confidence']?['freq'] ?? 0.0;
+    String method = debugInfo['method'] ?? 'N/A';
+    double finalConf = debugInfo['confidence']?['final'] ??
+        _currentConfidence; // Use state confidence as fallback
+
     return SingleChildScrollView(
       physics: const AlwaysScrollableScrollPhysics(),
       child: Padding(
@@ -1318,7 +1341,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
             ),
             const SizedBox(height: 16),
 
-            // 歩行BPM情報
+            // 歩行BPM情報 Card
             Card(
               elevation: 4,
               color: Colors.lightBlue.shade50,
@@ -1339,22 +1362,23 @@ class _BLEHomePageState extends State<BLEHomePage> {
                           ),
                         ),
                         const Spacer(),
-                        // 信頼性インジケーター
-                        stepDetector.reliabilityScore > 0
-                            ? Row(
-                                children: [
-                                  Text(
-                                    '信頼性: ',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.grey.shade700,
-                                    ),
-                                  ),
-                                  _buildReliabilityIndicator(
-                                      stepDetector.reliabilityScore),
-                                ],
-                              )
-                            : const SizedBox.shrink(),
+                        // Use state confidence for indicator
+                        if (calculatedBpmFromRaw != null &&
+                            calculatedBpmFromRaw! > 0) ...[
+                          Row(
+                            children: [
+                              Text(
+                                '信頼性: ',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                              _buildReliabilityIndicator(
+                                  finalConf), // Use state variable
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 10),
@@ -1362,7 +1386,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          calculatedBpmFromRaw != null
+                          // Use calculatedBpmFromRaw (already updated in state)
+                          calculatedBpmFromRaw != null &&
+                                  calculatedBpmFromRaw! > 0
                               ? '${calculatedBpmFromRaw!.toStringAsFixed(1)}'
                               : '--',
                           style: const TextStyle(
@@ -1380,17 +1406,29 @@ class _BLEHomePageState extends State<BLEHomePage> {
                           ),
                         ),
                         const Spacer(),
-                        // 最終更新時間
                         Text(
-                          latestData?.timestamp != null
-                              ? '最終更新: ${DateFormat('HH:mm:ss').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}'
-                              : '',
+                          // Use method from state debugInfo
+                          '($method)',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey.shade600,
+                            fontStyle: FontStyle.italic,
                           ),
                         ),
                       ],
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text(
+                        // Use null-safe access for latestData
+                        latestData?.timestamp != null
+                            ? '最終更新: ${DateFormat('HH:mm:ss').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}' // Safe now because of ?. check
+                            : '',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -1399,7 +1437,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
             const SizedBox(height: 16),
 
-            // 加速度センサー情報
+            // 加速度センサー情報 Card
             Card(
               elevation: 4,
               child: Padding(
@@ -1424,6 +1462,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
+                        // Use null-safe access
                         _buildAccelDataColumn(
                             'X軸', latestData?.accX, Colors.red),
                         _buildAccelDataColumn(
@@ -1441,8 +1480,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         ),
                         const SizedBox(width: 8),
                         Text(
+                          // Use null-safe access and check
                           latestData?.magnitude != null
-                              ? '${latestData!.magnitude!.toStringAsFixed(3)} G'
+                              ? '${latestData!.magnitude!.toStringAsFixed(3)} G' // Safe now
                               : '-- G',
                           style: const TextStyle(fontSize: 16),
                         ),
@@ -1455,7 +1495,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
             const SizedBox(height: 16),
 
-            // 歩行ピッチ計算の詳細
+            // 歩行ピッチ計算の詳細 Card
             Card(
               elevation: 4,
               color: Colors.amber.shade50,
@@ -1469,7 +1509,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         Icon(Icons.analytics, color: Colors.amber),
                         SizedBox(width: 8),
                         Text(
-                          '歩行解析情報',
+                          '歩行解析詳細',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -1478,23 +1518,31 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       ],
                     ),
                     const SizedBox(height: 16),
+                    // Use debugInfo from state
+                    _buildInfoRow('検出方法:', method), // Already safe
                     _buildInfoRow(
-                        '検出ステップ数:', '${stepDetector.stepTimestamps.length}'),
-                    _buildInfoRow(
-                        '最新ステップ間隔:',
-                        stepDetector.getLastStepInterval() != null
-                            ? '${stepDetector.getLastStepInterval()!.toStringAsFixed(0)} ms'
-                            : '-- ms'),
-                    _buildInfoRow(
-                        '生データBPM:',
-                        calculatedBpmFromRaw != null
-                            ? '${calculatedBpmFromRaw!.toStringAsFixed(1)} BPM'
+                        '直接検出 BPM (右足):',
+                        debugInfo['right_foot_bpm'] != null &&
+                                debugInfo['right_foot_bpm'] > 0
+                            ? '${debugInfo['right_foot_bpm'].toStringAsFixed(1)} BPM'
                             : '-- BPM'),
+                    _buildInfoRow('直接検出 信頼度:',
+                        '${(directConf * 100).toStringAsFixed(1)}%'),
                     _buildInfoRow(
-                        'フィルター適用BPM:',
-                        latestData?.bpm != null
-                            ? '${latestData!.bpm!.toStringAsFixed(1)} BPM'
+                        '周波数分析 BPM:',
+                        debugInfo['freq_bpm'] != null &&
+                                debugInfo['freq_bpm'] > 0
+                            ? '${debugInfo['freq_bpm'].toStringAsFixed(1)} BPM'
                             : '-- BPM'),
+                    _buildInfoRow('周波数分析 信頼度:',
+                        '${(freqConf * 100).toStringAsFixed(1)}%'),
+                    _buildInfoRow('最終 BPM:',
+                        '${(debugInfo['final_bpm'] ?? 0.0).toStringAsFixed(1)} BPM'),
+                    _buildInfoRow('最終 信頼度:',
+                        '${(finalConf * 100).toStringAsFixed(1)}%'), // Use finalConf derived from state
+                    if (debugInfo['median_bpm'] != null)
+                      _buildInfoRow('平滑化 BPM (Median):',
+                          '${(debugInfo['median_bpm']).toStringAsFixed(1)} BPM'),
                   ],
                 ),
               ),
@@ -1965,41 +2013,36 @@ class _BLEHomePageState extends State<BLEHomePage> {
     );
   }
 
-  // RAWデータ処理メソッド
+  // RAWデータ処理メソッド (状態変数を更新するように修正)
   void _processRawData(M5SensorData sensorData) {
-    final double? accX = sensorData.accX;
-    final double? accY = sensorData.accY; // Y軸データを取得
-    final double? accZ = sensorData.accZ;
-    double? magnitude = sensorData.magnitude;
-
-    // X軸加速度データがなければ処理中断
-    if (accX == null) {
-      // print('X軸加速度データがnullです。'); // デバッグ出力削減
+    // X軸加速度データがなければ処理中断 (変更なし)
+    if (sensorData.accX == null) {
       return;
     }
 
-    // magnitude がない場合は計算する (グラフ表示等で使う可能性のため残す)
-    if (accY != null && accZ != null) {
-      magnitude ??= sqrt(accX * accX + accY * accY + accZ * accZ);
+    // magnitude がない場合は計算する (変更なし)
+    double? magnitude = sensorData.magnitude;
+    if (sensorData.accY != null && sensorData.accZ != null) {
+      magnitude ??= math.sqrt(sensorData.accX! * sensorData.accX! +
+          sensorData.accY! * sensorData.accY! +
+          sensorData.accZ! * sensorData.accZ!);
     }
 
-    // グラフデータ更新 (magnitude を使用)
+    // グラフデータ更新 (変更なし)
     if (showRawDataGraph && magnitude != null) {
-      final x = magnitudeSpots.length.toDouble(); // magnitudeSpotsを基準にする
-      // X, Y, Zも更新
-      if (accX != null) accXSpots.add(FlSpot(x, accX));
-      if (accY != null) accYSpots.add(FlSpot(x, accY));
-      if (accZ != null) accZSpots.add(FlSpot(x, accZ));
+      // ... (グラフデータ更新処理は変更なし) ...
+      final x = magnitudeSpots.length.toDouble();
+      accXSpots.add(FlSpot(x, sensorData.accX!));
+      if (sensorData.accY != null) accYSpots.add(FlSpot(x, sensorData.accY!));
+      if (sensorData.accZ != null) accZSpots.add(FlSpot(x, sensorData.accZ!));
       magnitudeSpots.add(FlSpot(x, magnitude));
 
-      // グラフポイント数の制限
       while (magnitudeSpots.length > maxGraphPoints) {
         magnitudeSpots.removeAt(0);
         if (accXSpots.isNotEmpty) accXSpots.removeAt(0);
         if (accYSpots.isNotEmpty) accYSpots.removeAt(0);
         if (accZSpots.isNotEmpty) accZSpots.removeAt(0);
       }
-      // インデックスを修正
       for (int i = 0; i < magnitudeSpots.length; i++) {
         if (i < accXSpots.length)
           accXSpots[i] = FlSpot(i.toDouble(), accXSpots[i].y);
@@ -2011,31 +2054,42 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
     }
 
-    // StepDetectorにはX軸データを渡す
-    stepDetector.processData(accX, sensorData.timestamp).then((_) {
-      // 計算が終わったらUIを更新 (必要なら)
-      if (mounted && stepDetector.lastCalculatedBpm != calculatedBpmFromRaw) {
-        setState(() {
-          calculatedBpmFromRaw = stepDetector.lastCalculatedBpm;
-        });
-      }
-    });
+    // 新しい歩行ピッチ検出器を呼び出す
+    final result = cadenceDetector.addSensorData(sensorData);
+    double newBPM = result['bpm'] ?? 0.0;
+    double confidence = result['confidence'] ?? 0.0;
+    Map<String, dynamic> debugInfo = result['debug_info'] ?? {};
 
-    // 実験モードで記録中ならデータを記録 (accXも記録)
-    if (isRecording && experimentTimer != null) {
-      final record = ExperimentRecord(
-        timestamp: DateTime.now(),
-        targetBPM: currentMusicBPM,
-        detectedBPM: calculatedBpmFromRaw, // StepDetectorからのBPM
-        reliability: stepDetector.reliabilityScore,
-        accX: accX,
-        accY: accY,
-        accZ: accZ,
-        magnitude: magnitude,
-      );
+    // Update state variables
+    if (mounted) {
+      setState(() {
+        _currentCalculatedBpm = newBPM; // Store the latest BPM calculation
+        _currentConfidence = confidence;
+        _currentDebugInfo = debugInfo;
 
-      experimentRecords.add(record);
+        // Update the UI display variable
+        calculatedBpmFromRaw = (newBPM > 0 && confidence > 0.1) ? newBPM : null;
+      });
     }
+
+    // 詳細なデバッグ情報があれば表示 (必要に応じてコメント解除)
+    /*
+    if (debugInfo.isNotEmpty) {
+       print('--- 歩行検出デバッグ --- (' + DateFormat('HH:mm:ss.SSS').format(DateTime.now()) + ')');
+       print('方法: ${debugInfo['method']}');
+       print('直接BPM(右): ${debugInfo['right_foot_bpm']?.toStringAsFixed(1)} (${(debugInfo['confidence']?['direct'] * 100).toStringAsFixed(1)}%)');
+       print('周波数BPM: ${debugInfo['freq_bpm']?.toStringAsFixed(1)} (${(debugInfo['confidence']?['freq'] * 100).toStringAsFixed(1)}%)');
+       print('最終BPM: ${debugInfo['final_bpm']?.toStringAsFixed(1)} (${(debugInfo['confidence']?['final'] * 100).toStringAsFixed(1)}%)');
+       if (debugInfo['median_bpm'] != null) {
+           print('平滑化BPM: ${debugInfo['median_bpm'].toStringAsFixed(1)}');
+           print('BPM履歴: ${debugInfo['history']}');
+       }
+       print('-------------------------');
+    }
+    */
+
+    // 実験モードで記録中ならデータを記録 (呼び出し場所を変更)
+    // _recordExperimentData() の中で cadenceDetector.addSensorData が呼ばれるのでここでは不要
   }
 
   Color _getReliabilityColor(double reliabilityScore) {
@@ -2134,7 +2188,153 @@ class _BLEHomePageState extends State<BLEHomePage> {
     });
   }
   */
+
+  // 加速度データからBPMを計算する関数
+  double? calculateBPMFromAcceleration(List<M5SensorData> data) {
+    if (data.length < 20) {
+      return null; // データ不足
+    }
+
+    try {
+      // Y軸データの抽出（縦方向の加速度が歩行を最もよく反映）
+      List<double> accY = data.map((d) => d.accY ?? 0.0).toList();
+
+      // データの前処理
+      const int windowSize = 5; // 移動平均のウィンドウサイズ
+      List<double> smoothed = _applyMovingAverage(accY, windowSize);
+      List<double> centered = _centerData(smoothed);
+
+      // サンプリングレートの計算（データから推定）
+      double samplingRate = _calculateSamplingRate(data);
+
+      // 自己相関の計算
+      int acMaxLag = (samplingRate * 2).floor(); // 最大2秒のラグを考慮
+      List<double> autocorr = _computeAutocorrelation(centered, acMaxLag);
+
+      // 歩行に関連する周波数範囲を設定
+      const double minBPM = 60.0;
+      const double maxBPM = 180.0;
+      int minLag = (samplingRate * 60 / maxBPM).floor();
+      int maxLag = (samplingRate * 60 / minBPM).floor();
+
+      // 自己相関のピークを検出
+      Map<String, dynamic> result =
+          _findAutocorrelationPeak(autocorr, minLag, maxLag);
+
+      int lag = result['lag'];
+      double confidence = result['confidence'];
+
+      // BPMを計算
+      double bpm = 60.0 / (lag / samplingRate);
+
+      // 結果が範囲外の場合は補正
+      if (bpm > 180.0) bpm /= 2.0;
+      if (bpm < 60.0) bpm *= 2.0;
+
+      // 信頼度が低い場合はnullを返す（オプション）
+      if (confidence < 0.3) {
+        print('信頼度不足: $confidence, BPM計算をスキップ');
+        return null;
+      }
+
+      print('歩行BPM計算: $bpm BPM (信頼度: ${confidence.toStringAsFixed(2)})');
+      return bpm;
+    } catch (e) {
+      print('BPM計算エラー: $e');
+      return null;
+    }
+  }
+
+  // 移動平均を適用する関数
+  List<double> _applyMovingAverage(List<double> data, int windowSize) {
+    List<double> result = List<double>.filled(data.length, 0.0);
+
+    for (int i = 0; i < data.length; i++) {
+      double sum = 0.0;
+      int count = 0;
+
+      for (int j = i - (windowSize ~/ 2); j <= i + (windowSize ~/ 2); j++) {
+        if (j >= 0 && j < data.length) {
+          sum += data[j];
+          count++;
+        }
+      }
+
+      result[i] = sum / count;
+    }
+
+    return result;
+  }
+
+  // データを中心化する関数（平均を0にする）
+  List<double> _centerData(List<double> data) {
+    double mean = data.reduce((a, b) => a + b) / data.length;
+    return data.map((value) => value - mean).toList();
+  }
+
+  // サンプリングレートを計算する関数
+  double _calculateSamplingRate(List<M5SensorData> data) {
+    // タイムスタンプがあればそれを使用
+    if (data.length >= 2) {
+      int startTime = data[0].timestamp;
+      int endTime = data[data.length - 1].timestamp;
+      double durationSeconds = (endTime - startTime) / 1000.0;
+      if (durationSeconds > 0) {
+        return (data.length - 1) / durationSeconds;
+      }
+    }
+
+    // タイムスタンプがない場合や計算失敗時はデフォルト値を返す
+    return 50.0; // デフォルトのサンプリングレート (50Hz)
+  }
+
+  // 自己相関を計算する関数
+  List<double> _computeAutocorrelation(List<double> data, int maxLag) {
+    List<double> result = List<double>.filled(maxLag + 1, 0.0);
+    int n = data.length;
+
+    for (int lag = 0; lag <= maxLag; lag++) {
+      double sum = 0.0;
+      int count = 0;
+
+      for (int i = 0; i < n - lag; i++) {
+        sum += data[i] * data[i + lag];
+        count++;
+      }
+
+      if (count > 0) {
+        result[lag] = sum / count;
+      }
+    }
+
+    return result;
+  }
+
+  // 自己相関のピークを見つける関数
+  Map<String, dynamic> _findAutocorrelationPeak(
+      List<double> autocorr, int minLag, int maxLag) {
+    double maxVal = double.negativeInfinity;
+    int bestLag = minLag;
+
+    int effectiveMaxLag =
+        maxLag < autocorr.length ? maxLag : autocorr.length - 1;
+
+    for (int lag = minLag; lag <= effectiveMaxLag; lag++) {
+      if (autocorr[lag] > maxVal) {
+        maxVal = autocorr[lag];
+        bestLag = lag;
+      }
+    }
+
+    // 信頼度の計算 (0-1の範囲に正規化)
+    double confidence = 0.0;
+    if (autocorr[0] > 0) {
+      confidence = maxVal / autocorr[0]; // 自己相関のピーク値をラグ0の値で正規化
+    }
+
+    return {'lag': bestLag, 'confidence': confidence};
+  }
 }
 
 // 歩行検出アルゴリズム用クラス
-// Definitions moved to lib/utils/step_detector.dart
+// Definitions moved to lib/utils/right_foot_cadence_detector.dart

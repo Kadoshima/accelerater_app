@@ -30,6 +30,14 @@ class M5SensorData {
       (type == 'raw' || type == 'imu') ? data['accZ']?.toDouble() : null;
   double? get magnitude => type == 'raw' ? data['magnitude']?.toDouble() : null;
 
+  // ジャイロセンサーデータ
+  double? get gyroX =>
+      (type == 'raw' || type == 'imu') ? data['gyroX']?.toDouble() : null;
+  double? get gyroY =>
+      (type == 'raw' || type == 'imu') ? data['gyroY']?.toDouble() : null;
+  double? get gyroZ =>
+      (type == 'raw' || type == 'imu') ? data['gyroZ']?.toDouble() : null;
+
   // bpmデータからのアクセサ
   double? get bpm => type == 'bpm' ? data['bpm']?.toDouble() : null;
   int? get lastInterval => type == 'bpm' ? data['lastInterval'] : null;
