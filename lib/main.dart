@@ -1222,8 +1222,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          latestData?.bpm != null
-                              ? '${latestData!.bpm!.toStringAsFixed(1)}'
+                          calculatedBpmFromRaw != null
+                              ? '${calculatedBpmFromRaw!.toStringAsFixed(1)}'
                               : '--',
                           style: const TextStyle(
                             fontSize: 36,
@@ -1832,14 +1832,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
     final double? accZ = sensorData.accZ;
     double? magnitude = sensorData.magnitude;
 
-    // Y軸加速度データがなければ処理中断
-    if (accY == null) {
-      // print('Y軸加速度データがnullです。'); // デバッグ出力削減
+    // X軸加速度データがなければ処理中断
+    if (accX == null) {
+      // print('X軸加速度データがnullです。'); // デバッグ出力削減
       return;
     }
 
     // magnitude がない場合は計算する (グラフ表示等で使う可能性のため残す)
-    if (accX != null && accZ != null) {
+    if (accY != null && accZ != null) {
       magnitude ??= sqrt(accX * accX + accY * accY + accZ * accZ);
     }
 
@@ -1871,8 +1871,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
     }
 
-    // StepDetectorにはY軸データを渡す
-    stepDetector.processData(accY, sensorData.timestamp).then((_) {
+    // StepDetectorにはX軸データを渡す
+    stepDetector.processData(accX, sensorData.timestamp).then((_) {
       // 計算が終わったらUIを更新 (必要なら)
       if (mounted && stepDetector.lastCalculatedBpm != calculatedBpmFromRaw) {
         setState(() {
@@ -1881,7 +1881,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
     });
 
-    // 実験モードで記録中ならデータを記録 (accYも記録)
+    // 実験モードで記録中ならデータを記録 (accXも記録)
     if (isRecording && experimentTimer != null) {
       final record = ExperimentRecord(
         timestamp: DateTime.now(),
@@ -1889,16 +1889,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
         detectedBPM: calculatedBpmFromRaw, // StepDetectorからのBPM
         reliability: stepDetector.reliabilityScore,
         accX: accX,
-        accY: accY, // Y軸データも記録
+        accY: accY,
         accZ: accZ,
         magnitude: magnitude,
       );
 
       experimentRecords.add(record);
-      // BPMグラフ更新 - BPMデータ受信時に行うようにする
-      // if (calculatedBpmFromRaw != null) {
-      //   _updateGraphData();
-      // }
     }
   }
 
