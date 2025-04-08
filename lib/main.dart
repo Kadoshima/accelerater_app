@@ -3,20 +3,21 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // flutter_blue_plus�
 import 'dart:async'; // Streamの取り扱いに必要
 import 'dart:io';
 import 'dart:convert'; // JSONのデコード用
-import 'package:just_audio/just_audio.dart';
+import 'package:audioplayers/audioplayers.dart'; // シンプルな音声再生用
 import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'dart:math';
-import 'package:azblob/azblob.dart' as azblob;
-import 'dart:typed_data'; // Uint8List のために追加
+import 'package:flutter/services.dart'; // HapticFeedback用
+import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
+import 'package:crypto/crypto.dart' as crypto;
+import 'dart:convert' show utf8, base64; // base64 エンコーディング用
 
-// Azure Blob Storage 設定 (ハードコード)
-const String azureSasUrlString =
-    "https://hagiharatest.blob.core.windows.net/healthcaredata?sp=r&st=2025-04-05T11:00:37Z&se=2025-04-05T19:00:37Z&spr=https&sv=2024-11-04&sr=c&sig=ZVYBS%2Bloljb7PICeI2lsQzOnEBXD5SjEaneatdZjaw0%3D";
-const String azureContainerName = "healthcaredata"; // SAS URLからコンテナ名を取得
+// 独自モジュール
+import 'models/sensor_data.dart';
+import 'utils/step_detector.dart';
+import 'services/metronome.dart';
 
 void main() {
   // アプリ起動時にFlutterBluePlusを初期化
@@ -53,41 +54,7 @@ class MyApp extends StatelessWidget {
 }
 
 // M5Stackから受信するデータモデル
-class M5SensorData {
-  final String device;
-  final int timestamp;
-  final String type;
-  final Map<String, dynamic> data;
-
-  M5SensorData({
-    required this.device,
-    required this.timestamp,
-    required this.type,
-    required this.data,
-  });
-
-  factory M5SensorData.fromJson(Map<String, dynamic> json) {
-    return M5SensorData(
-      device: json['device'],
-      timestamp: json['timestamp'],
-      type: json['type'],
-      data: json['data'],
-    );
-  }
-
-  // raw または imu データからのアクセサ
-  double? get accX =>
-      (type == 'raw' || type == 'imu') ? data['accX']?.toDouble() : null;
-  double? get accY =>
-      (type == 'raw' || type == 'imu') ? data['accY']?.toDouble() : null;
-  double? get accZ =>
-      (type == 'raw' || type == 'imu') ? data['accZ']?.toDouble() : null;
-  double? get magnitude => type == 'raw' ? data['magnitude']?.toDouble() : null;
-
-  // bpmデータからのアクセサ
-  double? get bpm => type == 'bpm' ? data['bpm']?.toDouble() : null;
-  int? get lastInterval => type == 'bpm' ? data['lastInterval'] : null;
-}
+// Definitions moved to lib/models/sensor_data.dart
 
 // 実験記録用のデータモデル
 class ExperimentRecord {
@@ -96,11 +63,21 @@ class ExperimentRecord {
   final double? detectedBPM;
   final double? reliability; // 信頼性スコア
 
+  // 加速度センサーデータ
+  final double? accX;
+  final double? accY;
+  final double? accZ;
+  final double? magnitude;
+
   ExperimentRecord({
     required this.timestamp,
     required this.targetBPM,
     this.detectedBPM,
     this.reliability,
+    this.accX,
+    this.accY,
+    this.accZ,
+    this.magnitude,
   });
 
   // CSVレコードに変換するメソッド
@@ -112,6 +89,10 @@ class ExperimentRecord {
       reliability != null
           ? (reliability! * 100).toStringAsFixed(1) + '%'
           : 'N/A',
+      accX?.toStringAsFixed(6) ?? 'N/A',
+      accY?.toStringAsFixed(6) ?? 'N/A',
+      accZ?.toStringAsFixed(6) ?? 'N/A',
+      magnitude?.toStringAsFixed(6) ?? 'N/A',
     ];
   }
 }
@@ -153,16 +134,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
   double minY = 60;
   double maxY = 130;
 
-  // 音楽プレイヤー
-  final AudioPlayer _audioPlayer = AudioPlayer();
-  bool isPlaying = false;
-  double currentMusicBPM = 100.0;
+  // 音楽プレイヤー関連の変数を削除
+  // final AudioPlayer _audioPlayer = AudioPlayer();
+  // Uint8List? _clickSoundBytes; // メモリ上のクリック音データ
+
+  // isPlayingとcurrentMusicBPMはメトロノームの状態を反映させる
+  bool get isPlaying => _metronome.isPlaying;
+  double get currentMusicBPM => _metronome.currentBpm;
+
+  // メトロノームインスタンス
+  late Metronome _metronome;
+
   bool isAutoAdjustEnabled = false; // 自動テンポ調整フラグ
   double lastAutoAdjustTime = 0; // 最後に自動調整した時刻（ミリ秒）
   static const double AUTO_ADJUST_INTERVAL = 5000; // 自動調整の間隔（ミリ秒）
-  static const double MIN_RELIABILITY_FOR_ADJUST = 0.6; // 自動調整に必要な最小信頼性
 
-  // 段階的テンポ変更用
+  // 段階的テンポ変更用 (メトロノームクラスに移管検討)
   bool isGradualTempoChangeEnabled = false; // 段階的テンポ変更フラグ
   double targetBPM = 120.0; // 目標BPM
   double initialBPM = 100.0; // 初期BPM
@@ -187,7 +174,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   int remainingSeconds = 0;
 
   // デバイス名
-  final targetDeviceName = "M5StickGait";
+  final targetDeviceName = "M5StickIMU";
 
   // サービスUUIDとキャラクタリスティックUUID
   final serviceUuid = Guid("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
@@ -220,82 +207,81 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // BPMの手動計算結果
   double? calculatedBpmFromRaw;
 
+  // Azure Blob Storage接続情報
+  final String azureConnectionString = "***REMOVED***";
+  final String containerName = "accelerationdata"; // コンテナ名
+  final String azureSasUrl =
+      "BlobEndpoint=https://hagiharatest.blob.core.windows.net/;QueueEndpoint=https://hagiharatest.queue.core.windows.net/;FileEndpoint=https://hagiharatest.file.core.windows.net/;TableEndpoint=https://hagiharatest.table.core.windows.net/;SharedAccessSignature=sv=2024-11-04&ss=bfqt&srt=sco&sp=rwdlacupiytfx&se=2025-06-07T14:20:29Z&st=2025-04-06T06:20:29Z&spr=https,http&sig=6eTvHlWxWR1E5IjDOZlM4as4UawiAvZrZv9DZEnsfpg%3D";
+
   @override
   void initState() {
     super.initState();
 
     // 初期化を非同期で安全に行う
     _initBluetooth();
-    _initAudioPlayer();
-  }
-
-  // オーディオプレーヤーの初期化
-  Future<void> _initAudioPlayer() async {
-    try {
-      // メトロノーム音源を設定
-      await _audioPlayer.setAsset('assets/sounds/metronome_click.mp3');
-
-      // 初期テンポを設定
+    _metronome = Metronome(); // Metronomeインスタンスを作成
+    _metronome.initialize().then((_) {
+      // Metronomeを初期化
+      // 初期テンポをメトロノームにも設定
       selectedTempo = tempoPresets[1]; // 100 BPM
-      currentMusicBPM = selectedTempo!.bpm;
-
-      // スピード調整（1.0がデフォルト）
-      await _audioPlayer.setSpeed(1.0);
-    } catch (e) {
-      print('オーディオプレーヤー初期化エラー: $e');
-    }
+      _metronome.changeTempo(selectedTempo!.bpm);
+      if (mounted) {
+        setState(() {}); // UI更新
+      }
+    }).catchError((e) {
+      print('メトロノーム初期化エラー: $e');
+    });
   }
 
   // 音楽の再生/一時停止を切り替える
   Future<void> _togglePlayback() async {
     try {
-      if (isPlaying) {
-        await _audioPlayer.pause();
+      if (_metronome.isPlaying) {
+        await _metronome.stop();
         if (isRecording && experimentTimer != null) {
           experimentTimer!.cancel();
           experimentTimer = null;
         }
       } else {
-        // 選択されたテンポに応じて再生速度を調整
-        if (selectedTempo != null) {
-          currentMusicBPM = selectedTempo!.bpm;
-
-          // 実験モードの場合はタイマーを開始
-          if (isExperimentMode && isRecording) {
-            _startExperiment();
-          }
+        await _metronome.start(bpm: currentMusicBPM);
+        if (isExperimentMode && isRecording) {
+          _startExperiment();
         }
-
-        // ループ再生を有効にして開始
-        await _audioPlayer.setLoopMode(LoopMode.one);
-        await _audioPlayer.play();
       }
-
-      setState(() {
-        isPlaying = !isPlaying;
-      });
+      // isPlaying は Metronome の状態に依存するため、ここでsetStateを呼ぶ必要は基本ないが、
+      // ボタン表示の更新のためには必要。
+      if (mounted) {
+        setState(() {});
+      }
     } catch (e) {
-      print('再生エラー: $e');
+      print('再生切り替えエラー: $e');
     }
   }
 
   // テンポを変更する
   Future<void> _changeTempo(MusicTempo tempo) async {
     try {
-      currentMusicBPM = tempo.bpm;
+      await _metronome.changeTempo(tempo.bpm);
       selectedTempo = tempo;
-
-      // 再生中なら新しいテンポを適用
-      if (isPlaying) {
-        // テンポに応じた再生速度を計算（100BPMを基準に）
-        // 例：110BPM = 110/100 = 1.1倍速
-        double speedRatio = tempo.bpm / 100.0;
-        await _audioPlayer.setSpeed(speedRatio);
+      if (mounted) {
+        setState(() {});
       }
-
-      setState(() {});
     } catch (e) {
       print('テンポ変更エラー: $e');
+    }
+  }
+
+  // 任意のBPM値に音楽テンポを変更する
+  Future<void> _changeMusicTempo(double bpm) async {
+    try {
+      await _metronome.changeTempo(bpm);
+      if (mounted) {
+        setState(() {
+          selectedTempo = _findNearestTempoPreset(bpm);
+        });
+      }
+    } catch (e) {
+      print('音楽テンポ変更エラー: $e');
     }
   }
 
@@ -307,34 +293,60 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 実験ファイル名を設定
     experimentFileName =
-        'experiment_${selectedTempo!.bpm}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
+        'acceleration_data_${currentMusicBPM.toStringAsFixed(0)}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
 
-    // タイマーを設定して1秒ごとに更新
-    experimentTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        remainingSeconds--;
+    // 加速度データを高頻度（100ms間隔）で記録するタイマー
+    experimentTimer =
+        Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      // タイマー用カウンター（1秒ごとに更新）
+      if (timer.tick % 10 == 0) {
+        setState(() {
+          remainingSeconds--;
 
-        // 実験終了時の処理
-        if (remainingSeconds <= 0) {
-          timer.cancel();
-          _finishExperiment();
-        }
-      });
+          // 実験終了時の処理
+          if (remainingSeconds <= 0) {
+            timer.cancel();
+            _finishExperiment();
+          }
+        });
+      }
 
-      // 1秒ごとにデータを記録
-      if (latestData != null && latestData!.type == 'bpm') {
+      // 最新の加速度データがあれば記録
+      if (latestData != null) {
         _recordExperimentData();
       }
     });
+
+    // 記録開始メッセージ
+    // print('加速度データの記録を開始しました: $experimentFileName (100msごと)');
   }
 
   // 実験データを記録
   void _recordExperimentData() {
+    // 最新のデータを取得
+    double? detectedBpm = latestData?.bpm;
+    double? reliability = stepDetector.reliabilityScore;
+
+    // BPMデータがない場合、歩行検出から直接取得
+    if (detectedBpm == null && calculatedBpmFromRaw != null) {
+      detectedBpm = calculatedBpmFromRaw;
+    }
+
+    // 最新の加速度データを取得
+    double? accX = latestData?.accX;
+    double? accY = latestData?.accY;
+    double? accZ = latestData?.accZ;
+    double? magnitude = latestData?.magnitude;
+
     final record = ExperimentRecord(
       timestamp: DateTime.now(),
       targetBPM: currentMusicBPM,
-      detectedBPM: latestData?.bpm,
-      reliability: stepDetector.reliabilityScore,
+      detectedBPM: detectedBpm,
+      reliability: reliability,
+      accX: accX,
+      accY: accY,
+      accZ: accZ,
+      magnitude: magnitude,
     );
 
     setState(() {
@@ -367,78 +379,269 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 再生を停止
     if (isPlaying) {
-      await _audioPlayer.pause();
+      await _metronome.stop();
       setState(() {
-        isPlaying = false;
+        // isPlaying = false;
       });
     }
 
-    // 完了メッセージを表示
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('実験データを保存しました: $experimentFileName'),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+    setState(() {
+      isRecording = false;
+    });
+
+    // データを保存
+    if (experimentRecords.isNotEmpty) {
+      try {
+        await _saveExperimentData();
+      } catch (e) {
+        print('データ保存エラー: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('データ保存に失敗しました: $e'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      }
     }
   }
 
-  // Azure Blob Storageにファイルをアップロード
+  // GMT形式の日付文字列を取得
+  String _getGMTRequestDate() {
+    final now = DateTime.now().toUtc();
+    final weekday =
+        ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][now.weekday - 1];
+    final month = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ][now.month - 1];
+    return '$weekday, ${now.day.toString().padLeft(2, '0')} $month ${now.year} ' +
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')} GMT';
+  }
+
+  // Azure Blob Storage の共有キー認証ヘッダを作成
+  String _createAuthorizationHeader(String stringToSign, String accountKey) {
+    final keyBytes = base64.decode(accountKey);
+    final hmacSha256 = crypto.Hmac(crypto.sha256, keyBytes);
+    final stringToSignBytes = utf8.encode(stringToSign);
+    final signature = hmacSha256.convert(stringToSignBytes);
+    return base64.encode(signature.bytes);
+  }
+
+  // Azure Blob Storageにファイルをアップロード（SAS URL方式）
   Future<void> _uploadToAzure(String filePath, String blobName) async {
     try {
       File file = File(filePath);
       if (!await file.exists()) {
         print('アップロードファイルが見つかりません: $filePath');
-        return;
+        throw Exception('ファイルが見つかりません: $filePath');
       }
 
       print('Azure Blob Storageへアップロード開始: $blobName');
 
-      // azblobパッケージを使用してアップロード
-      final storage = azblob.AzureStorage.parse(azureSasUrlString);
+      // ファイルの内容を読み込む
+      final content = await file.readAsBytes();
+      print('ファイル読み込み完了: ${content.length} バイト');
 
-      // ファイルの内容をUint8Listとして読み込む
-      Uint8List content = await file.readAsBytes();
+      try {
+        // SAS URL を使用してAzureストレージクライアントを初期化
+        final storage =
+            azblob.AzureStorage.parse(azureConnectionString); // 接続文字列方式に変更
+        print('Azure Storage接続成功 (接続文字列)');
 
-      // azblobはパスからコンテナ名を自動判別しないため、Blob名を指定
-      await storage.putBlob(blobName,
-          bodyBytes: content, contentType: 'text/csv');
+        // SAS URLではコンテナ名を含めてアップロード
+        final fullBlobPath = '$containerName/$blobName';
+        print('アップロード先: $fullBlobPath');
 
-      print('Azure Blob Storageへのアップロード成功: $blobName');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Azureへデータをアップロードしました: $blobName'),
-            duration: const Duration(seconds: 3),
-          ),
+        // ファイルをアップロード
+        await storage.putBlob(
+          fullBlobPath,
+          bodyBytes: content,
+          contentType: 'text/csv',
         );
+
+        print('Azure Blob Storageへのアップロード成功: $fullBlobPath');
+
+        // 成功通知
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Azureへデータをアップロードしました: $blobName'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (e) {
+        final errorDetails = e.toString();
+        print('Azure Blob Storageアップロードエラー: $errorDetails'); // 元のログ
+
+        // AzureStorageExceptionの詳細を出力
+        if (e is azblob.AzureStorageException) {
+          print('>>> AzureStorageException詳細 <<<');
+          print('Status Code: ${e.statusCode}');
+          print('Message: ${e.message}');
+          // print('Details: ${e.details}'); // details プロパティは存在しないためコメントアウト
+          print('---------------------------------');
+        }
+
+        throw Exception('アップロードエラー: $errorDetails'); // エラーを再スロー
       }
     } catch (e) {
-      print('Azure Blob Storageへのアップロードエラー: $e');
+      print('Azure Blob Storageへのアップロード処理失敗: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Azureへのアップロードに失敗しました: $e'),
-            duration: const Duration(seconds: 5),
+            duration: const Duration(seconds: 10),
             backgroundColor: Colors.red,
+          ),
+        );
+      }
+      throw e;
+    }
+  }
+
+  // データ保存時にAzureにもアップロードするよう修正
+  Future<void> _saveExperimentData() async {
+    // 実験ファイル名の確認
+    if (experimentFileName.isEmpty) {
+      experimentFileName =
+          'acceleration_data_${selectedTempo?.bpm ?? currentMusicBPM}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
+    }
+
+    // ローカルにCSVファイルとして保存
+    final directory = await getApplicationDocumentsDirectory();
+    final filePath = '${directory.path}/$experimentFileName.csv';
+
+    // CSVデータの作成
+    List<List<dynamic>> csvData = [
+      [
+        'Timestamp',
+        'Target BPM',
+        'Detected BPM',
+        'Reliability',
+        'AccX',
+        'AccY',
+        'AccZ',
+        'Magnitude'
+      ], // ヘッダー行
+    ];
+    csvData.addAll(experimentRecords.map((e) => e.toCSV()).toList());
+    String csvString = const ListToCsvConverter().convert(csvData);
+
+    // ファイルに書き込み
+    await File(filePath).writeAsString(csvString);
+    print('実験データをローカルに保存しました: $filePath');
+    print(
+        'データ行数: ${experimentRecords.length}, ファイルサイズ: ${(csvString.length / 1024).toStringAsFixed(2)} KB');
+
+    // 保存完了メッセージを表示
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '加速度データをローカルに保存しました: $experimentFileName\n${experimentRecords.length}行のデータ'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+
+    // Azure Blob Storageへのアップロード
+    if (mounted) {
+      // アップロード中表示
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                strokeWidth: 3,
+              ),
+              SizedBox(width: 16),
+              Text('Azureにデータをアップロード中...'),
+            ],
+          ),
+          duration: Duration(seconds: 10),
+          backgroundColor: Colors.blue,
+        ),
+      );
+    }
+
+    try {
+      // Azureへアップロード
+      await _uploadToAzure(filePath, '$experimentFileName.csv');
+
+      // データ保存場所を通知
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('データ保存完了'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('ファイル名: $experimentFileName.csv'),
+                const SizedBox(height: 8),
+                Text('データ数: ${experimentRecords.length}行'),
+                const SizedBox(height: 16),
+                const Text('保存先:'),
+                Text('• ローカル: $filePath', style: const TextStyle(fontSize: 14)),
+                Text('• Azure: $containerName/$experimentFileName.csv',
+                    style: const TextStyle(fontSize: 14)),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (e) {
+      print('Azureアップロードエラー: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Azureへのアップロードに失敗しました: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
           ),
         );
       }
     }
   }
 
-  // データ保存時にAzureにもアップロードするよう修正
-  Future<void> _saveExperimentData() async {
-    // ... (既存のローカル保存処理) ...
-    final directory = await getApplicationDocumentsDirectory();
-    final filePath = '${directory.path}/$experimentFileName.csv';
-    // ... (既存のCSV書き込み処理) ...
+  // CSVファイルのサイズ推定
+  String _estimateFileSize() {
+    // 1行あたりのサイズを概算（バイト単位）
+    const int bytesPerRow = 100; // タイムスタンプ、BPM、加速度値などを含む
 
-    print('実験データをローカルに保存しました: $filePath');
+    // 合計行数 = 記録間隔（100ms）× 実験時間（秒）× 10
+    int totalRows = (experimentDurationSeconds * 10);
 
-    // Azure Blob Storageへのアップロード
-    await _uploadToAzure(filePath, '$experimentFileName.csv');
+    // 合計サイズ（キロバイト）
+    double totalKB = (totalRows * bytesPerRow) / 1024;
+
+    if (totalKB < 1024) {
+      return '${totalKB.toStringAsFixed(1)} KB';
+    } else {
+      return '${(totalKB / 1024).toStringAsFixed(2)} MB';
+    }
   }
 
   // Bluetooth初期化とリスナー設定を行う非同期メソッド
@@ -552,10 +755,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
         for (ScanResult r in results) {
           // デバッグ用にログ出力
-          print('デバイス発見: ${r.device.name} (${r.device.id})');
+          print('デバイス発見: ${r.device.platformName} (${r.device.remoteId})');
 
           // ターゲット名と一致するデバイスを発見したら接続へ
-          if (r.device.name == targetDeviceName) {
+          if (r.device.platformName == targetDeviceName) {
             // スキャン停止を確実に実行
             FlutterBluePlus.stopScan().then((_) {
               if (!_isDisposing && mounted) {
@@ -718,7 +921,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   try {
                     // 受信したバイト列をUTF-8文字列に変換
                     String jsonString = String.fromCharCodes(value);
-                    print('受信データ: $jsonString');
+                    // print('受信データ: $jsonString'); // この行をコメントアウト
 
                     // JSONとして解析
                     final jsonData = jsonDecode(jsonString);
@@ -737,6 +940,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         // データタイプに応じた処理
                         if (sensorData.type == 'raw' ||
                             sensorData.type == 'imu') {
+                          // デバッグ出力追加（センサーデータ確認用）
+                          /* print(
+                              '📱 IMUデータ: X=${sensorData.accX?.toStringAsFixed(3)}, Y=${sensorData.accY?.toStringAsFixed(3)}, Z=${sensorData.accZ?.toStringAsFixed(3)}'); */
+
                           // RAWデータの場合は加速度データを処理
                           _processRawData(sensorData);
                         } else if (sensorData.type == 'bpm') {
@@ -845,7 +1052,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     _streamSubscriptions.clear();
 
     // オーディオプレーヤーの解放
-    _audioPlayer.dispose();
+    // _audioPlayer.dispose();
 
     // タイマーの解放
     if (experimentTimer != null) {
@@ -860,1000 +1067,838 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final statusText = () {
-      if (isScanning) return "スキャン中...";
-      if (isConnecting) return "接続中...";
-      if (isConnected) return "接続済み";
-      return "未接続";
-    }();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('HealthCore M5 - 歩行測定'),
-        actions: [
-          if (isConnected)
-            IconButton(
-              icon: Icon(isExperimentMode ? Icons.science : Icons.bluetooth),
+        backgroundColor: Colors.blueGrey.shade800,
+      ),
+      body: Column(
+        children: [
+          // Bluetooth接続ステータス - 常に表示
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: isConnected ? Colors.green.shade100 : Colors.red.shade100,
+            child: Row(
+              children: [
+                Icon(
+                  isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
+                  color:
+                      isConnected ? Colors.green.shade800 : Colors.red.shade800,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isConnected ? 'M5StickIMUに接続中' : 'デバイスに接続していません',
+                  style: TextStyle(
+                    color: isConnected
+                        ? Colors.green.shade800
+                        : Colors.red.shade800,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                ElevatedButton(
+                  onPressed: isScanning
+                      ? null
+                      : () {
+                          print('スキャンボタンが押されました');
+                          startScan();
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isConnected
+                        ? Colors.orange.shade200
+                        : Colors.blue.shade200,
+                    foregroundColor: Colors.black87,
+                  ),
+                  child: Text(isConnected ? '再接続' : 'スキャン'),
+                ),
+              ],
+            ),
+          ),
+
+          // メインコンテンツ - Expandedで残りの空間を使う
+          Expanded(
+            child: isExperimentMode
+                ? _buildExperimentMode()
+                : _buildDataMonitorMode(),
+          ),
+
+          // 実験モード切り替えボタン - 常に下部に表示
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade200,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.grey.withOpacity(0.5),
+                  spreadRadius: 1,
+                  blurRadius: 3,
+                  offset: const Offset(0, -1),
+                ),
+              ],
+            ),
+            child: ElevatedButton.icon(
+              icon: Icon(isExperimentMode
+                  ? Icons.monitor_heart_outlined
+                  : Icons.science_outlined),
+              label: Text(isExperimentMode ? 'モニターモードに戻る' : '精度評価モードへ'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isExperimentMode ? Colors.blue : Colors.amber,
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
               onPressed: () {
                 setState(() {
                   isExperimentMode = !isExperimentMode;
-                  if (isRecording) {
-                    _toggleRecording(); // 記録中なら停止
+                  if (!isExperimentMode) {
+                    isRecording = false;
                   }
                 });
               },
-              tooltip: isExperimentMode ? '通常モード' : '実験モード',
             ),
+          ),
         ],
       ),
-      body: Padding(
+    );
+  }
+
+  // データモニターモードのUIを構築
+  Widget _buildDataMonitorMode() {
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 接続状態表示
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color:
-                    isConnected ? Colors.green.shade100 : Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    isConnected
-                        ? Icons.bluetooth_connected
-                        : Icons.bluetooth_disabled,
-                    color: isConnected ? Colors.green : Colors.grey,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    "状態: $statusText",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color:
-                          isConnected ? Colors.green.shade800 : Colors.black87,
-                    ),
-                  ),
-                  const Spacer(),
-                  ElevatedButton(
-                    onPressed: isScanning ? null : startScan,
-                    child: const Text("デバイスをスキャン"),
-                  ),
-                ],
-              ),
+            const Text(
+              'リアルタイムデータ',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 16),
 
-            // スキャン結果表示
-            if (_scanResults.isNotEmpty && !isConnected) ...[
-              const Text("見つかったデバイス:",
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Expanded(
-                flex: 2,
-                child: ListView.builder(
-                  itemCount: _scanResults.length,
-                  itemBuilder: (context, index) {
-                    final result = _scanResults[index];
-                    final name = result.device.name.isNotEmpty
-                        ? result.device.name
-                        : "不明なデバイス";
-                    final id = result.device.id.toString();
-                    final rssi = result.rssi.toString();
-
-                    return Card(
-                      child: ListTile(
-                        title: Text(name),
-                        subtitle: Text('ID: $id, 信号強度: $rssi dBm'),
-                        trailing: ElevatedButton(
-                          child: const Text('接続'),
-                          onPressed: isConnecting ||
-                                  (isConnected &&
-                                      targetDevice?.id == result.device.id)
-                              ? null
-                              : () {
-                                  // 手動で接続
-                                  FlutterBluePlus.stopScan();
-                                  connectToDevice(result.device);
-                                },
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ] else if (!isScanning && !isConnected) ...[
-              const Text("デバイスが見つかりませんでした。再スキャンしてください。"),
-            ],
-
-            if (isConnected) ...[
-              const SizedBox(height: 16),
-              if (isExperimentMode) ...[
-                // 実験モード表示
-                _buildExperimentModeView(),
-              ] else ...[
-                // 通常のデータ表示
-                Expanded(
-                  flex: 3,
-                  child: _buildDataDisplay(),
-                ),
-              ],
-              const SizedBox(height: 8),
-              ElevatedButton(
-                onPressed: disconnect,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                ),
-                child: const Text("切断"),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 実験モードのビュー
-  Widget _buildExperimentModeView() {
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 実験モードヘッダー
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.blue.shade100,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.science, color: Colors.blue),
-                SizedBox(width: 8),
-                Text(
-                  "歩行ピッチ精度評価モード",
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // テンポ選択
-          Row(
-            children: [
-              const Text("テスト用テンポ: "),
-              const SizedBox(width: 8),
-              Expanded(
-                child: DropdownButton<MusicTempo>(
-                  isExpanded: true,
-                  value: selectedTempo,
-                  items: tempoPresets.map((tempo) {
-                    return DropdownMenuItem<MusicTempo>(
-                      value: tempo,
-                      child: Text(tempo.name),
-                    );
-                  }).toList(),
-                  onChanged: isPlaying
-                      ? null
-                      : (tempo) {
-                          if (tempo != null) {
-                            _changeTempo(tempo);
-                          }
-                        },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // 再生/記録コントロール
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              ElevatedButton.icon(
-                icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                label: Text(isPlaying ? "一時停止" : "再生"),
-                onPressed: _togglePlayback,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isPlaying ? Colors.orange : Colors.green,
-                  foregroundColor: Colors.white,
-                ),
-              ),
-              ElevatedButton.icon(
-                icon:
-                    Icon(isRecording ? Icons.stop : Icons.fiber_manual_record),
-                label: Text(isRecording ? "記録停止" : "記録開始"),
-                onPressed: latestData == null ? null : _toggleRecording,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isRecording ? Colors.red : Colors.blue,
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // 残り時間表示（記録中のみ）
-          if (isRecording && experimentTimer != null) ...[
-            LinearProgressIndicator(
-              value: remainingSeconds / experimentDurationSeconds,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              "残り時間: $remainingSeconds 秒",
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-          ],
-
-          // データ表示
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      "設定テンポ: ${currentMusicBPM.toStringAsFixed(1)} BPM",
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    if (latestData != null && latestData!.type == 'bpm')
-                      Text(
-                        "検出テンポ: ${latestData!.bpm?.toStringAsFixed(1) ?? '?'} BPM",
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-
-                // グラフ表示
-                if (isRecording && bpmSpots.isNotEmpty)
-                  Expanded(
-                    child: _buildBpmChart(),
-                  )
-                else
-                  const Expanded(
-                    child: Center(
-                      child: Text("記録を開始すると、ここにグラフが表示されます"),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // BPMグラフを構築
-  Widget _buildBpmChart() {
-    return LineChart(
-      LineChartData(
-        minX: 0,
-        maxX: bpmSpots.length.toDouble(),
-        minY: minY,
-        maxY: maxY,
-        titlesData: FlTitlesData(
-          rightTitles: const AxisTitles(
-            sideTitles: SideTitles(showTitles: false),
-          ),
-          topTitles: const AxisTitles(
-            sideTitles: SideTitles(showTitles: false),
-          ),
-          bottomTitles: AxisTitles(
-            axisNameWidget: const Text('時間 (秒)'),
-            sideTitles: SideTitles(
-              showTitles: true,
-              getTitlesWidget: (value, meta) {
-                if (value % 5 == 0) {
-                  return Text(value.toInt().toString());
-                }
-                return const Text('');
-              },
-            ),
-          ),
-          leftTitles: AxisTitles(
-            axisNameWidget: const Text('BPM'),
-            sideTitles: SideTitles(
-              showTitles: true,
-              getTitlesWidget: (value, meta) {
-                if (value % 10 == 0) {
-                  return Text(value.toInt().toString());
-                }
-                return const Text('');
-              },
-            ),
-          ),
-        ),
-        gridData: FlGridData(
-          drawHorizontalLine: true,
-          horizontalInterval: 10,
-        ),
-        borderData: FlBorderData(show: true),
-        lineBarsData: [
-          // BPMデータライン
-          LineChartBarData(
-            spots: bpmSpots,
-            isCurved: true,
-            color: Colors.blue,
-            barWidth: 3,
-            dotData: const FlDotData(show: false),
-            belowBarData: BarAreaData(
-              show: true,
-              color: Colors.blue.withOpacity(0.2),
-            ),
-          ),
-          // 目標BPMライン
-          LineChartBarData(
-            spots: [
-              FlSpot(0, currentMusicBPM),
-              FlSpot(bpmSpots.length.toDouble(), currentMusicBPM),
-            ],
-            color: Colors.red,
-            barWidth: 2,
-            dotData: const FlDotData(show: false),
-            dashArray: [5, 5],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDataDisplay() {
-    if (latestData == null) {
-      return const Center(child: Text("データ待機中..."));
-    }
-
-    // if (latestData!.type == 'raw') { // 元の条件
-    if (latestData!.type == 'raw' || latestData!.type == 'imu') {
-      // 'imu' でも加速度表示
-      // 加速度データ表示
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("加速度データモード:", // 表示名を変更
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          const SizedBox(height: 8),
-
-          // 値の表示
-          Row(
-            children: [
-              Expanded(
+            // 歩行BPM情報
+            Card(
+              elevation: 4,
+              color: Colors.lightBlue.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("X軸加速度: ${latestData!.accX?.toStringAsFixed(3)} G"),
-                    Text("Y軸加速度: ${latestData!.accY?.toStringAsFixed(3)} G"),
-                    Text("Z軸加速度: ${latestData!.accZ?.toStringAsFixed(3)} G"),
-                    Text(
-                        "合成加速度: ${latestData!.magnitude?.toStringAsFixed(3) ?? '計算中...'} G"),
-                  ],
-                ),
-              ),
-
-              // 独自計算のBPM表示
-              if (calculatedBpmFromRaw != null)
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("独自歩行検出:",
-                          style: TextStyle(fontWeight: FontWeight.bold)),
-                      Text("BPM: ${calculatedBpmFromRaw!.toStringAsFixed(1)}",
+                    Row(
+                      children: [
+                        const Icon(Icons.monitor_heart, color: Colors.blue),
+                        const SizedBox(width: 8),
+                        const Text(
+                          '歩行ピッチ (BPM)',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        // 信頼性インジケーター
+                        stepDetector.reliabilityScore > 0
+                            ? Row(
+                                children: [
+                                  Text(
+                                    '信頼性: ',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey.shade700,
+                                    ),
+                                  ),
+                                  _buildReliabilityIndicator(
+                                      stepDetector.reliabilityScore),
+                                ],
+                              )
+                            : const SizedBox.shrink(),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          latestData?.bpm != null
+                              ? '${latestData!.bpm!.toStringAsFixed(1)}'
+                              : '--',
                           style: const TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold)),
-                      Text(
-                          "間隔: ${stepDetector.getLastStepInterval() ?? '?'} ms"),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.verified,
-                            color: _getReliabilityColor(
-                                stepDetector.reliabilityScore),
-                            size: 16,
+                            fontSize: 36,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.indigo,
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            "信頼性: ${(stepDetector.reliabilityScore * 100).toStringAsFixed(0)}%",
-                            style: TextStyle(
-                                color: _getReliabilityColor(
-                                    stepDetector.reliabilityScore),
-                                fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'BPM',
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.indigo,
                           ),
-                        ],
-                      ),
-                      TextButton(
-                        onPressed: () {
-                          setState(() {
-                            stepDetector.reset();
-                            calculatedBpmFromRaw = null;
-                          });
-                        },
-                        child: const Text("リセット"),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-
-          // 自動テンポ調整ボタン（BPM検出中かつ再生中のみ表示）
-          if (calculatedBpmFromRaw != null) ...[
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  icon: Icon(isPlaying
-                      ? (isAutoAdjustEnabled ? Icons.sync : Icons.sync_disabled)
-                      : Icons.music_note),
-                  label: Text(isPlaying
-                      ? (isAutoAdjustEnabled ? "自動調整ON" : "自動調整OFF")
-                      : "音楽テンポ: ${currentMusicBPM.toStringAsFixed(1)} BPM"),
-                  onPressed: isPlaying
-                      ? () {
-                          setState(() {
-                            isAutoAdjustEnabled = !isAutoAdjustEnabled;
-                            // 自動調整を有効にする場合は段階的変更を無効化
-                            if (isAutoAdjustEnabled) {
-                              _stopGradualTempoChange();
-                              _autoAdjustTempo(); // 有効化時に即座に一度調整
-                            }
-                          });
-                        }
-                      : () {
-                          _togglePlayback();
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isAutoAdjustEnabled
-                        ? Colors.green
-                        : (isPlaying ? Colors.blue : Colors.orange),
-                  ),
-                ),
-                if (isPlaying) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.stop),
-                    onPressed: _togglePlayback,
-                    color: Colors.red,
-                  ),
-                ],
-              ],
-            ),
-
-            // 段階的テンポ変更コントロール
-            if (isPlaying && !isAutoAdjustEnabled) ...[
-              const SizedBox(height: 8),
-              const Divider(),
-              const Text("段階的テンポ変更:",
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
-
-              // 段階的テンポ変更のパラメータ設定
-              if (!isGradualTempoChangeEnabled) ...[
-                Row(
-                  children: [
-                    const Text("目標BPM: "),
-                    Expanded(
-                      child: Slider(
-                        value: targetBPM,
-                        min: 80.0,
-                        max: 140.0,
-                        divisions: 60,
-                        label: targetBPM.toStringAsFixed(1),
-                        onChanged: (value) {
-                          setState(() {
-                            targetBPM = value;
-                          });
-                        },
-                      ),
-                    ),
-                    SizedBox(
-                      width: 50,
-                      child: Text(targetBPM.toStringAsFixed(1)),
+                        ),
+                        const Spacer(),
+                        // 最終更新時間
+                        Text(
+                          latestData?.timestamp != null
+                              ? '最終更新: ${DateFormat('HH:mm:ss').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}'
+                              : '',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
-                ),
-                Row(
-                  children: [
-                    const Text("変化速度: "),
-                    Expanded(
-                      child: Slider(
-                        value: tempoChangeStep,
-                        min: 0.5,
-                        max: 5.0,
-                        divisions: 9,
-                        label: "${tempoChangeStep.toStringAsFixed(1)} BPM/分",
-                        onChanged: (value) {
-                          setState(() {
-                            tempoChangeStep = value;
-                          });
-                        },
-                      ),
-                    ),
-                    SizedBox(
-                      width: 50,
-                      child: Text("${tempoChangeStep.toStringAsFixed(1)}/分"),
-                    ),
-                  ],
-                ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text("段階的テンポ変更開始"),
-                  onPressed: _startGradualTempoChange,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                  ),
-                ),
-              ] else ...[
-                // 進行中の段階的テンポ変更の状態表示
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                        "${initialBPM.toStringAsFixed(1)} → ${targetBPM.toStringAsFixed(1)} BPM"),
-                    const SizedBox(width: 8),
-                    Text("(${tempoChangeStep.toStringAsFixed(1)} BPM/分)"),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value: (currentMusicBPM - initialBPM).abs() /
-                      (targetBPM - initialBPM).abs(),
-                  backgroundColor: Colors.grey[300],
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.deepPurple),
-                ),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.stop),
-                  label: const Text("停止"),
-                  onPressed: _stopGradualTempoChange,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                  ),
-                ),
-              ],
-            ],
-          ],
-
-          // グラフ表示切替ボタン
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                icon: Icon(
-                    showRawDataGraph ? Icons.visibility_off : Icons.visibility),
-                label: Text(showRawDataGraph ? "グラフを隠す" : "グラフを表示"),
-                onPressed: () {
-                  setState(() {
-                    showRawDataGraph = !showRawDataGraph;
-                    if (showRawDataGraph && accXSpots.isEmpty) {
-                      // グラフ表示時にデータがない場合は初期化
-                      accXSpots.clear();
-                      accYSpots.clear();
-                      accZSpots.clear();
-                      magnitudeSpots.clear();
-                    }
-                  });
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: showRawDataGraph ? Colors.blue : Colors.grey,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-
-          // グラフ表示
-          if (showRawDataGraph) ...[
-            const Text("加速度グラフ:",
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            Expanded(
-              child: _buildAccelerationChart(),
             ),
-          ] else ...[
-            // 履歴表示
-            const Text("履歴:", style: TextStyle(fontWeight: FontWeight.bold)),
-            Expanded(
-              child: ListView.builder(
-                itemCount: dataHistory.length,
-                reverse: true,
-                itemBuilder: (context, index) {
-                  final data = dataHistory[dataHistory.length - 1 - index];
-                  if (data.type == 'raw' || data.type == 'imu') {
-                    return ListTile(
-                      dense: true,
-                      title: Text("時刻: ${_formatTimestamp(data.timestamp)}"),
-                      subtitle: Text("X: ${data.accX?.toStringAsFixed(2)}, " +
-                          "Y: ${data.accY?.toStringAsFixed(2)}, " +
-                          "Z: ${data.accZ?.toStringAsFixed(2)}"),
-                    );
-                  } else {
-                    return const SizedBox.shrink();
-                  }
-                },
-              ),
-            ),
-          ],
-        ],
-      );
-    } else if (latestData!.type == 'bpm') {
-      // BPMデータ表示
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("歩行ピッチモード:",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          const SizedBox(height: 8),
-          Text("歩行ピッチ: ${latestData!.bpm?.toStringAsFixed(1)} steps/min",
-              style:
-                  const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-          Text("最終ステップ間隔: ${latestData!.lastInterval} ms"),
 
-          // 音楽再生コントロール
-          if (latestData!.bpm != null) ...[
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  icon: Icon(isPlaying
-                      ? (isAutoAdjustEnabled ? Icons.sync : Icons.sync_disabled)
-                      : Icons.music_note),
-                  label: Text(isPlaying
-                      ? (isAutoAdjustEnabled ? "自動調整ON" : "自動調整OFF")
-                      : "音楽テンポ: ${currentMusicBPM.toStringAsFixed(1)} BPM"),
-                  onPressed: isPlaying
-                      ? () {
-                          setState(() {
-                            isAutoAdjustEnabled = !isAutoAdjustEnabled;
-                            if (isAutoAdjustEnabled) {
-                              _stopGradualTempoChange();
-                              // BPMモードでは、デバイスから送られてくるBPMを使用
-                              double detectedBPM = latestData!.bpm!;
-                              double newBPM = currentMusicBPM +
-                                  (detectedBPM - currentMusicBPM) * 0.3;
-                              newBPM = newBPM.clamp(80.0, 140.0);
-                              _changeMusicTempo(newBPM);
-                            }
-                          });
-                        }
-                      : () {
-                          _togglePlayback();
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isAutoAdjustEnabled
-                        ? Colors.green
-                        : (isPlaying ? Colors.blue : Colors.orange),
-                  ),
+
+            // 加速度センサー情報
+            Card(
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.speed, color: Colors.orange),
+                        SizedBox(width: 8),
+                        Text(
+                          '加速度情報',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _buildAccelDataColumn(
+                            'X軸', latestData?.accX, Colors.red),
+                        _buildAccelDataColumn(
+                            'Y軸', latestData?.accY, Colors.green),
+                        _buildAccelDataColumn(
+                            'Z軸', latestData?.accZ, Colors.blue),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Text(
+                          '合成加速度:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          latestData?.magnitude != null
+                              ? '${latestData!.magnitude!.toStringAsFixed(3)} G'
+                              : '-- G',
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                if (isPlaying) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.stop),
-                    onPressed: _togglePlayback,
-                    color: Colors.red,
-                  ),
-                ],
-              ],
+              ),
             ),
 
-            // 段階的テンポ変更コントロール (BPMモードでも同様に提供)
-            if (isPlaying && !isAutoAdjustEnabled) ...[
-              const SizedBox(height: 8),
-              const Divider(),
-              const Text("段階的テンポ変更:",
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
+            const SizedBox(height: 16),
 
-              // 段階的テンポ変更のパラメータ設定
-              if (!isGradualTempoChangeEnabled) ...[
-                Row(
+            // 歩行ピッチ計算の詳細
+            Card(
+              elevation: 4,
+              color: Colors.amber.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text("目標BPM: "),
-                    Expanded(
-                      child: Slider(
-                        value: targetBPM,
-                        min: 80.0,
-                        max: 140.0,
-                        divisions: 60,
-                        label: targetBPM.toStringAsFixed(1),
-                        onChanged: (value) {
-                          setState(() {
-                            targetBPM = value;
-                          });
-                        },
-                      ),
+                    const Row(
+                      children: [
+                        Icon(Icons.analytics, color: Colors.amber),
+                        SizedBox(width: 8),
+                        Text(
+                          '歩行解析情報',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
                     ),
-                    SizedBox(
-                      width: 50,
-                      child: Text(targetBPM.toStringAsFixed(1)),
-                    ),
+                    const SizedBox(height: 16),
+                    _buildInfoRow(
+                        '検出ステップ数:', '${stepDetector.stepTimestamps.length}'),
+                    _buildInfoRow(
+                        '最新ステップ間隔:',
+                        stepDetector.getLastStepInterval() != null
+                            ? '${stepDetector.getLastStepInterval()!.toStringAsFixed(0)} ms'
+                            : '-- ms'),
+                    _buildInfoRow(
+                        '生データBPM:',
+                        calculatedBpmFromRaw != null
+                            ? '${calculatedBpmFromRaw!.toStringAsFixed(1)} BPM'
+                            : '-- BPM'),
+                    _buildInfoRow(
+                        'フィルター適用BPM:',
+                        latestData?.bpm != null
+                            ? '${latestData!.bpm!.toStringAsFixed(1)} BPM'
+                            : '-- BPM'),
                   ],
                 ),
-                Row(
-                  children: [
-                    const Text("変化速度: "),
-                    Expanded(
-                      child: Slider(
-                        value: tempoChangeStep,
-                        min: 0.5,
-                        max: 5.0,
-                        divisions: 9,
-                        label: "${tempoChangeStep.toStringAsFixed(1)} BPM/分",
-                        onChanged: (value) {
-                          setState(() {
-                            tempoChangeStep = value;
-                          });
-                        },
-                      ),
-                    ),
-                    SizedBox(
-                      width: 50,
-                      child: Text("${tempoChangeStep.toStringAsFixed(1)}/分"),
-                    ),
-                  ],
-                ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text("段階的テンポ変更開始"),
-                  onPressed: _startGradualTempoChange,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                  ),
-                ),
-              ] else ...[
-                // 進行中の段階的テンポ変更の状態表示
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                        "${initialBPM.toStringAsFixed(1)} → ${targetBPM.toStringAsFixed(1)} BPM"),
-                    const SizedBox(width: 8),
-                    Text("(${tempoChangeStep.toStringAsFixed(1)} BPM/分)"),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value: (currentMusicBPM - initialBPM).abs() /
-                      (targetBPM - initialBPM).abs(),
-                  backgroundColor: Colors.grey[300],
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.deepPurple),
-                ),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.stop),
-                  label: const Text("停止"),
-                  onPressed: _stopGradualTempoChange,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                  ),
-                ),
-              ],
-            ],
+              ),
+            ),
           ],
-
-          const SizedBox(height: 16),
-          const Text("履歴:", style: TextStyle(fontWeight: FontWeight.bold)),
-          Expanded(
-            child: ListView.builder(
-              itemCount: dataHistory.length,
-              reverse: true,
-              itemBuilder: (context, index) {
-                final data = dataHistory[dataHistory.length - 1 - index];
-                if (data.type == 'bpm') {
-                  return ListTile(
-                    dense: true,
-                    title: Text("時刻: ${_formatTimestamp(data.timestamp)}"),
-                    subtitle: Text("BPM: ${data.bpm?.toStringAsFixed(1)}, " +
-                        "間隔: ${data.lastInterval} ms"),
-                  );
-                } else {
-                  return const SizedBox.shrink();
-                }
-              },
-            ),
-          ),
-        ],
-      );
-    } else {
-      // その他のタイプの場合 (念のため)
-      return Center(child: Text("不明なデータタイプ: ${latestData!.type}"));
-    }
-  }
-
-  // 加速度データのグラフを構築
-  Widget _buildAccelerationChart() {
-    return LineChart(
-      LineChartData(
-        minX: 0,
-        maxX: maxGraphPoints.toDouble(),
-        minY: -1.2,
-        maxY: 1.2,
-        titlesData: FlTitlesData(
-          rightTitles: const AxisTitles(
-            sideTitles: SideTitles(showTitles: false),
-          ),
-          topTitles: const AxisTitles(
-            sideTitles: SideTitles(showTitles: false),
-          ),
-          bottomTitles: const AxisTitles(
-            axisNameWidget: Text('サンプル'),
-            sideTitles: SideTitles(showTitles: false),
-          ),
-          leftTitles: AxisTitles(
-            axisNameWidget: const Text('加速度 (G)'),
-            sideTitles: SideTitles(
-              showTitles: true,
-              getTitlesWidget: (value, meta) {
-                if (value == -1 || value == 0 || value == 1) {
-                  return Text(value.toInt().toString());
-                }
-                return const Text('');
-              },
-            ),
-          ),
-        ),
-        gridData: const FlGridData(
-          drawHorizontalLine: true,
-          horizontalInterval: 0.5,
-        ),
-        borderData: FlBorderData(show: true),
-        lineBarsData: [
-          // X軸加速度
-          LineChartBarData(
-            spots: accXSpots,
-            isCurved: true,
-            color: Colors.red,
-            barWidth: 2,
-            dotData: const FlDotData(show: false),
-          ),
-          // Y軸加速度
-          LineChartBarData(
-            spots: accYSpots,
-            isCurved: true,
-            color: Colors.green,
-            barWidth: 2,
-            dotData: const FlDotData(show: false),
-          ),
-          // Z軸加速度
-          LineChartBarData(
-            spots: accZSpots,
-            isCurved: true,
-            color: Colors.blue,
-            barWidth: 2,
-            dotData: const FlDotData(show: false),
-          ),
-          // 合成加速度
-          LineChartBarData(
-            spots: magnitudeSpots,
-            isCurved: true,
-            color: Colors.purple,
-            barWidth: 3,
-            dotData: const FlDotData(show: false),
-          ),
-        ],
-        lineTouchData: LineTouchData(
-          touchTooltipData: LineTouchTooltipData(
-            tooltipBgColor: Colors.black.withOpacity(0.8),
-            getTooltipItems: (List<LineBarSpot> touchedSpots) {
-              return touchedSpots.map((spot) {
-                String name = '';
-                Color color = Colors.white;
-
-                switch (spot.barIndex) {
-                  case 0:
-                    name = 'X軸';
-                    color = Colors.red;
-                    break;
-                  case 1:
-                    name = 'Y軸';
-                    color = Colors.green;
-                    break;
-                  case 2:
-                    name = 'Z軸';
-                    color = Colors.blue;
-                    break;
-                  case 3:
-                    name = '合成';
-                    color = Colors.purple;
-                    break;
-                }
-
-                return LineTooltipItem(
-                  '$name: ${spot.y.toStringAsFixed(3)}',
-                  TextStyle(color: color, fontWeight: FontWeight.bold),
-                );
-              }).toList();
-            },
-          ),
         ),
       ),
     );
   }
 
-  String _formatTimestamp(int timestamp) {
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    return "${date.hour}:${date.minute}:${date.second}.${date.millisecond}";
+  // 信頼性インジケーターを構築
+  Widget _buildReliabilityIndicator(double reliability) {
+    final int filledStars = (reliability * 5).round();
+    return Row(
+      children: List.generate(5, (index) {
+        return Icon(
+          index < filledStars ? Icons.star : Icons.star_border,
+          color: Colors.amber,
+          size: 16,
+        );
+      }),
+    );
+  }
+
+  // 加速度データの列を構築
+  Widget _buildAccelDataColumn(String title, double? value, Color color) {
+    return Column(
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            color: color,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value != null ? value.toStringAsFixed(3) : "--",
+          style: TextStyle(
+            fontSize: 16,
+            color: color,
+          ),
+        ),
+        Text(
+          "G",
+          style: TextStyle(
+            fontSize: 12,
+            color: color.withOpacity(0.7),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // 情報行を構築
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 16,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 実験モードのUIを構築
+  Widget _buildExperimentMode() {
+    return Column(
+      children: [
+        // 実験設定
+        Card(
+          margin: const EdgeInsets.all(16),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.science, color: Colors.amber),
+                    SizedBox(width: 8),
+                    Text(
+                      '加速度データ収集',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  '加速度データを記録して後から解析することができます。100ミリ秒ごとに3軸の加速度データとBPM情報を記録します。',
+                  style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '音声テンポの設定はファイル名と保存データに記録されます。実験目的に合わせたテンポを選択してください。',
+                  style: TextStyle(fontSize: 14, color: Colors.blue.shade700),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        const Text('実験時間: '),
+                        DropdownButton<int>(
+                          value: experimentDurationSeconds,
+                          items: [30, 60, 120, 180, 300].map((int value) {
+                            return DropdownMenuItem<int>(
+                              value: value,
+                              child: Text(
+                                  '${value ~/ 60 > 0 ? "${value ~/ 60}分" : ""}${value % 60 > 0 ? "${value % 60}秒" : ""}'),
+                            );
+                          }).toList(),
+                          onChanged: isRecording
+                              ? null
+                              : (int? newValue) {
+                                  if (newValue != null) {
+                                    setState(() {
+                                      experimentDurationSeconds = newValue;
+                                      remainingSeconds = newValue;
+                                    });
+                                  }
+                                },
+                        ),
+                      ],
+                    ),
+                    Text(
+                      '推定サイズ: ${_estimateFileSize()}',
+                      style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade700,
+                          fontStyle: FontStyle.italic),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        const Text('音声テンポ: '),
+                        DropdownButton<MusicTempo>(
+                          value: selectedTempo,
+                          items: tempoPresets.map((tempo) {
+                            return DropdownMenuItem<MusicTempo>(
+                              value: tempo,
+                              child: Text(tempo.name),
+                            );
+                          }).toList(),
+                          onChanged: isRecording || isPlaying
+                              ? null
+                              : (MusicTempo? newTempo) {
+                                  if (newTempo != null) {
+                                    _changeTempo(newTempo);
+                                  }
+                                },
+                        ),
+                        if (isRecording || isPlaying)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8.0),
+                            child: Tooltip(
+                              message: isPlaying
+                                  ? '再生中はテンポを変更できません。一時停止してから変更してください。'
+                                  : '記録中はテンポを変更できません。',
+                              child: Icon(
+                                Icons.info_outline,
+                                size: 16,
+                                color: Colors.orange,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    // 現在のBPM値を表示
+                    Text(
+                      '現在: ${currentMusicBPM.toStringAsFixed(1)} BPM',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton.icon(
+                      icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+                      label: Text(isPlaying ? "一時停止" : "再生"),
+                      onPressed: _togglePlayback,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            isPlaying ? Colors.orange : Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      icon: Icon(
+                          isRecording ? Icons.stop : Icons.fiber_manual_record),
+                      label: Text(isRecording ? "記録停止" : "記録開始"),
+                      onPressed: latestData == null ? null : _toggleRecording,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isRecording ? Colors.red : Colors.blue,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // 残り時間表示（記録中のみ）
+        if (isRecording && experimentTimer != null) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            color: Colors.amber.shade50,
+            child: Column(
+              children: [
+                LinearProgressIndicator(
+                  value: remainingSeconds / experimentDurationSeconds,
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      "残り時間: $remainingSeconds 秒",
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 16),
+                    Text(
+                      "記録データ: ${experimentRecords.length} 行",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        // スクロール可能なデータ表示部分
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                // BPMトラッキンググラフ
+                if (bpmSpots.isNotEmpty) ...[
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Icon(Icons.timeline, color: Colors.blue),
+                              SizedBox(width: 8),
+                              Text(
+                                'BPM推移グラフ',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          SizedBox(
+                            height: 200,
+                            child: LineChart(
+                              LineChartData(
+                                gridData: FlGridData(show: true),
+                                titlesData: FlTitlesData(
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 30,
+                                    ),
+                                  ),
+                                  bottomTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 30,
+                                    ),
+                                  ),
+                                  topTitles: AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false),
+                                  ),
+                                  rightTitles: AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false),
+                                  ),
+                                ),
+                                borderData: FlBorderData(show: true),
+                                minX: 0,
+                                maxX: bpmSpots.length.toDouble(),
+                                minY: minY,
+                                maxY: maxY,
+                                lineBarsData: [
+                                  // 検出BPM
+                                  LineChartBarData(
+                                    spots: bpmSpots,
+                                    isCurved: true,
+                                    color: Colors.blue,
+                                    barWidth: 3,
+                                    dotData: FlDotData(show: false),
+                                  ),
+                                  // ターゲットBPM (直線)
+                                  LineChartBarData(
+                                    spots: [
+                                      FlSpot(0, currentMusicBPM),
+                                      FlSpot(bpmSpots.length.toDouble(),
+                                          currentMusicBPM),
+                                    ],
+                                    isCurved: false,
+                                    color: Colors.red.withOpacity(0.5),
+                                    barWidth: 2,
+                                    dotData: FlDotData(show: false),
+                                    dashArray: [5, 5],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
+                // データレコード表示
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.data_array, color: Colors.green),
+                            SizedBox(width: 8),
+                            Text(
+                              '収集データ',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        // データ統計情報
+                        if (experimentRecords.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8.0),
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'データ統計情報',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.grey.shade800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    '合計レコード数: ${experimentRecords.length}',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                  Text(
+                                    '記録間隔: 100ミリ秒',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                  Text(
+                                    '推定ファイルサイズ: ${(experimentRecords.length * 100 / 1024).toStringAsFixed(1)} KB',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                  Text(
+                                    '保存ファイル名: $experimentFileName',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        if (experimentRecords.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Text("まだデータがありません"),
+                          )
+                        else
+                          Column(
+                            children: experimentRecords.reversed
+                                .take(5)
+                                .map((record) {
+                              return ListTile(
+                                dense: true,
+                                title: Text(
+                                  "時刻: ${DateFormat('HH:mm:ss.SSS').format(record.timestamp)}",
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / " +
+                                          "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} BPM",
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                    Text(
+                                      "加速度: X=${record.accX?.toStringAsFixed(3) ?? 'N/A'}, Y=${record.accY?.toStringAsFixed(3) ?? 'N/A'}, Z=${record.accZ?.toStringAsFixed(3) ?? 'N/A'}",
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+
+                        // スクロール可能なエリアの下部に十分なスペースを確保
+                        const SizedBox(height: 50),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   // RAWデータ処理メソッド
   void _processRawData(M5SensorData sensorData) {
     final double? accX = sensorData.accX;
-    final double? accY = sensorData.accY;
+    final double? accY = sensorData.accY; // Y軸データを取得
     final double? accZ = sensorData.accZ;
     double? magnitude = sensorData.magnitude;
 
-    // 加速度データがなければ処理中断
-    if (accX == null || accY == null || accZ == null) {
-      print('必要な加速度データがnullです。');
+    // Y軸加速度データがなければ処理中断
+    if (accY == null) {
+      // print('Y軸加速度データがnullです。'); // デバッグ出力削減
       return;
     }
 
-    // magnitude がない場合は計算する
-    magnitude ??= sqrt(accX * accX + accY * accY + accZ * accZ);
+    // magnitude がない場合は計算する (グラフ表示等で使う可能性のため残す)
+    if (accX != null && accZ != null) {
+      magnitude ??= sqrt(accX * accX + accY * accY + accZ * accZ);
+    }
 
-    // グラフデータを更新
-    if (showRawDataGraph) {
-      final x = accXSpots.length.toDouble();
-      accXSpots.add(FlSpot(x, accX));
-      accYSpots.add(FlSpot(x, accY));
-      accZSpots.add(FlSpot(x, accZ));
+    // グラフデータ更新 (magnitude を使用)
+    if (showRawDataGraph && magnitude != null) {
+      final x = magnitudeSpots.length.toDouble(); // magnitudeSpotsを基準にする
+      // X, Y, Zも更新
+      if (accX != null) accXSpots.add(FlSpot(x, accX));
+      if (accY != null) accYSpots.add(FlSpot(x, accY));
+      if (accZ != null) accZSpots.add(FlSpot(x, accZ));
       magnitudeSpots.add(FlSpot(x, magnitude));
 
       // グラフポイント数の制限
-      if (accXSpots.length > maxGraphPoints) {
-        accXSpots.removeAt(0);
-        accYSpots.removeAt(0);
-        accZSpots.removeAt(0);
+      while (magnitudeSpots.length > maxGraphPoints) {
         magnitudeSpots.removeAt(0);
-
-        // インデックスを修正
-        for (int i = 0; i < accXSpots.length; i++) {
+        if (accXSpots.isNotEmpty) accXSpots.removeAt(0);
+        if (accYSpots.isNotEmpty) accYSpots.removeAt(0);
+        if (accZSpots.isNotEmpty) accZSpots.removeAt(0);
+      }
+      // インデックスを修正
+      for (int i = 0; i < magnitudeSpots.length; i++) {
+        if (i < accXSpots.length)
           accXSpots[i] = FlSpot(i.toDouble(), accXSpots[i].y);
+        if (i < accYSpots.length)
           accYSpots[i] = FlSpot(i.toDouble(), accYSpots[i].y);
+        if (i < accZSpots.length)
           accZSpots[i] = FlSpot(i.toDouble(), accZSpots[i].y);
-          magnitudeSpots[i] = FlSpot(i.toDouble(), magnitudeSpots[i].y);
-        }
+        magnitudeSpots[i] = FlSpot(i.toDouble(), magnitudeSpots[i].y);
       }
     }
 
-    // 独自の歩行検出アルゴリズムを実行
-    bool stepDetected =
-        stepDetector.detectStep(magnitude, sensorData.timestamp);
-
-    if (stepDetected) {
-      print('ステップ検出: timestamp=${sensorData.timestamp}');
-      calculatedBpmFromRaw = stepDetector.lastCalculatedBpm;
-
-      // 自動テンポ調整が有効なら実行
-      if (isAutoAdjustEnabled && isPlaying && !isExperimentMode) {
-        _autoAdjustTempo();
+    // StepDetectorにはY軸データを渡す
+    stepDetector.processData(accY, sensorData.timestamp).then((_) {
+      // 計算が終わったらUIを更新 (必要なら)
+      if (mounted && stepDetector.lastCalculatedBpm != calculatedBpmFromRaw) {
+        setState(() {
+          calculatedBpmFromRaw = stepDetector.lastCalculatedBpm;
+        });
       }
-    }
+    });
 
-    // 実験モードで記録中ならデータを記録
-    if (isRecording &&
-        experimentTimer != null &&
-        calculatedBpmFromRaw != null) {
+    // 実験モードで記録中ならデータを記録 (accYも記録)
+    if (isRecording && experimentTimer != null) {
       final record = ExperimentRecord(
         timestamp: DateTime.now(),
         targetBPM: currentMusicBPM,
-        detectedBPM: calculatedBpmFromRaw,
+        detectedBPM: calculatedBpmFromRaw, // StepDetectorからのBPM
         reliability: stepDetector.reliabilityScore,
+        accX: accX,
+        accY: accY, // Y軸データも記録
+        accZ: accZ,
+        magnitude: magnitude,
       );
 
       experimentRecords.add(record);
-      _updateGraphData();
+      // BPMグラフ更新 - BPMデータ受信時に行うようにする
+      // if (calculatedBpmFromRaw != null) {
+      //   _updateGraphData();
+      // }
     }
   }
 
@@ -1864,69 +1909,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
       return Colors.yellow;
     } else {
       return Colors.red;
-    }
-  }
-
-  // 自動テンポ調整機能
-  void _autoAdjustTempo() {
-    // 必要なデータがない場合は何もしない
-    if (calculatedBpmFromRaw == null ||
-        stepDetector.reliabilityScore < MIN_RELIABILITY_FOR_ADJUST) {
-      return;
-    }
-
-    // 前回の調整から十分な時間が経過していない場合はスキップ
-    double currentTime = DateTime.now().millisecondsSinceEpoch.toDouble();
-    if (currentTime - lastAutoAdjustTime < AUTO_ADJUST_INTERVAL) {
-      return;
-    }
-
-    // 最新の測定BPMを取得
-    double detectedBPM = calculatedBpmFromRaw!;
-
-    // 現在のテンポとの差を計算
-    double bpmDifference = (detectedBPM - currentMusicBPM).abs();
-
-    // 差が大きい場合（5%以上）、テンポを徐々に調整
-    if (bpmDifference > currentMusicBPM * 0.05) {
-      // 新しいテンポを計算（検出BPMと現在のBPMの中間値に調整）
-      double newBPM = currentMusicBPM + (detectedBPM - currentMusicBPM) * 0.3;
-
-      // BPMの範囲を制限（80-140 BPM）
-      newBPM = newBPM.clamp(80.0, 140.0);
-
-      // テンポを変更
-      _changeMusicTempo(newBPM);
-
-      // 調整時刻を記録
-      lastAutoAdjustTime = currentTime;
-
-      print('テンポ自動調整: $currentMusicBPM BPM (検出: $detectedBPM BPM)');
-    }
-  }
-
-  // 任意のBPM値に音楽テンポを変更する
-  Future<void> _changeMusicTempo(double bpm) async {
-    try {
-      // BPM値を更新
-      currentMusicBPM = bpm;
-
-      // 再生中なら速度を調整
-      if (isPlaying) {
-        // テンポに応じた再生速度を計算（100BPMを基準に）
-        double speedRatio = bpm / 100.0;
-        await _audioPlayer.setSpeed(speedRatio);
-      }
-
-      // UI更新
-      if (mounted) {
-        setState(() {
-          // 最も近いプリセットを選択
-          selectedTempo = _findNearestTempoPreset(bpm);
-        });
-      }
-    } catch (e) {
-      print('テンポ変更エラー: $e');
     }
   }
 
@@ -1946,7 +1928,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
     return nearest;
   }
 
-  // 段階的テンポ変更を開始
+  // 段階的テンポ変更を開始（未使用）
+  /*
   void _startGradualTempoChange() {
     if (isGradualTempoChangeEnabled || !isPlaying) return;
 
@@ -1999,6 +1982,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
           targetBPM: newBPM,
           detectedBPM: calculatedBpmFromRaw,
           reliability: stepDetector.reliabilityScore,
+          accX: latestData?.accX,
+          accY: latestData?.accY,
+          accZ: latestData?.accZ,
+          magnitude: latestData?.magnitude,
         );
 
         experimentRecords.add(record);
@@ -2010,397 +1997,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
     });
   }
-
-  // 段階的テンポ変更を停止
-  void _stopGradualTempoChange() {
-    if (!isGradualTempoChangeEnabled) return;
-
-    // タイマーを停止
-    if (gradualTempoTimer != null) {
-      gradualTempoTimer!.cancel();
-      gradualTempoTimer = null;
-    }
-
-    isGradualTempoChangeEnabled = false;
-    print('段階的テンポ変更終了: $currentMusicBPM BPM');
-
-    // UIを更新
-    if (mounted) {
-      setState(() {});
-    }
-
-    // 実験モードでなく、かつデータが記録されていれば、CSV保存を提案
-    if (!isExperimentMode && experimentRecords.isNotEmpty) {
-      _showSaveDataDialog();
-    }
-  }
-
-  // データ保存ダイアログを表示
-  void _showSaveDataDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('テンポ変更データの保存'),
-          content: const Text('段階的テンポ変更中のデータをローカルとAzureに保存しますか？'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                experimentRecords.clear(); // 保存しなくてもデータはクリア
-              },
-              child: const Text('キャンセル'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                Navigator.of(context).pop();
-                experimentFileName =
-                    'gradual_tempo_${initialBPM.toInt()}_to_${targetBPM.toInt()}_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
-
-                // ローカル保存とAzureアップロードを実行
-                final directory = await getApplicationDocumentsDirectory();
-                final filePath = '${directory.path}/$experimentFileName.csv';
-
-                List<List<dynamic>> csvData = [
-                  [
-                    'Timestamp',
-                    'Target BPM',
-                    'Detected BPM',
-                    'Reliability'
-                  ], // ヘッダー行
-                ];
-                csvData
-                    .addAll(experimentRecords.map((e) => e.toCSV()).toList());
-                String csvString = const ListToCsvConverter().convert(csvData);
-
-                try {
-                  await File(filePath).writeAsString(csvString);
-                  print('実験データをローカルに保存しました: $filePath');
-
-                  // Azureへのアップロード
-                  await _uploadToAzure(
-                      filePath, '$experimentFileName.csv'); // Blob名に拡張子を追加
-                } catch (e) {
-                  print("ファイルの書き込みまたはアップロードエラー: $e");
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('データ保存/アップロードに失敗: $e'),
-                        backgroundColor: Colors.red,
-                      ),
-                    );
-                  }
-                }
-
-                experimentRecords.clear();
-              },
-              child: const Text('保存してアップロード'),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  */
 }
 
 // 歩行検出アルゴリズム用クラス
-class StepDetector {
-  // 基本設定
-  double _baseThreshold = 0.10; // 基本閾値 (少し下げてみる)
-  double _adaptiveThreshold = 0.10; // 適応的閾値（動的に調整される）
-  int _minStepInterval = 400; // 最小ステップ間隔 (ms)
-  int _maxStepInterval = 2000; // 最大ステップ間隔 (ms)
-
-  // バッファとウィンドウ
-  final int _windowSize = 20; // 解析ウィンドウサイズ
-  final List<double> _magnitudeBuffer = []; // 加速度バッファ
-  final List<int> _timestampBuffer = []; // タイムスタンプバッファ
-
-  // ステップ履歴
-  List<int> stepTimestamps = []; // 検出したステップのタイムスタンプ
-  List<double> stepConfidences = []; // 各ステップの信頼度
-
-  // 状態変数
-  double? lastCalculatedBpm; // 最後に計算したBPM
-  double _currentReliabilityScore = 0.0; // 現在の信頼性スコア (0.0-1.0)
-
-  // フィルター用
-  final List<double> _filteredMagnitude = []; // フィルター適用後の値
-  double _lastMagnitude = 0.0;
-
-  // 設定用ゲッターとセッター
-  double get baseThreshold => _baseThreshold;
-  set baseThreshold(double value) {
-    if (value > 0 && value < 1.0) {
-      _baseThreshold = value;
-      _adaptiveThreshold = value; // 初期値としても設定
-    }
-  }
-
-  int get minStepInterval => _minStepInterval;
-  set minStepInterval(int value) {
-    if (value > 100 && value < _maxStepInterval) {
-      _minStepInterval = value;
-    }
-  }
-
-  int get maxStepInterval => _maxStepInterval;
-  set maxStepInterval(int value) {
-    if (value > _minStepInterval) {
-      _maxStepInterval = value;
-    }
-  }
-
-  // 信頼性スコアのゲッター
-  double get reliabilityScore => _currentReliabilityScore;
-
-  // 加速度データを追加
-  void addAccelerationData(double magnitude, int timestamp) {
-    // バッファに追加
-    _magnitudeBuffer.add(magnitude);
-    _timestampBuffer.add(timestamp);
-
-    // バッファサイズを制限
-    if (_magnitudeBuffer.length > _windowSize * 2) {
-      _magnitudeBuffer.removeAt(0);
-      _timestampBuffer.removeAt(0);
-    }
-
-    // バンドパスフィルター適用（簡易版）
-    double filteredValue = _applyBandpassFilter(magnitude);
-    _filteredMagnitude.add(filteredValue);
-
-    // フィルターバッファも同様に制限
-    if (_filteredMagnitude.length > _windowSize * 2) {
-      _filteredMagnitude.removeAt(0);
-    }
-
-    // 閾値を動的に調整
-    _updateAdaptiveThreshold();
-  }
-
-  // バンドパスフィルタ処理（簡易版）
-  double _applyBandpassFilter(double magnitude) {
-    // ローパスフィルタ（高周波ノイズ除去）
-    double alpha = 0.3; // ローパスフィルタ係数
-    double lowPassValue = alpha * magnitude + (1 - alpha) * _lastMagnitude;
-
-    // ハイパスフィルタ（重力成分除去）
-    double beta = 0.8; // ハイパスフィルタ係数
-    double highPassValue = beta * (lowPassValue - _lastMagnitude);
-
-    _lastMagnitude = lowPassValue;
-    return highPassValue.abs(); // 絶対値を使用
-  }
-
-  // 適応的閾値の更新
-  void _updateAdaptiveThreshold() {
-    if (_magnitudeBuffer.length < 10) return;
-
-    // 直近のデータから標準偏差を計算
-    double sum = 0.0;
-    double sumSq = 0.0;
-
-    for (int i = _magnitudeBuffer.length - 10;
-        i < _magnitudeBuffer.length;
-        i++) {
-      sum += _magnitudeBuffer[i];
-      sumSq += _magnitudeBuffer[i] * _magnitudeBuffer[i];
-    }
-
-    double mean = sum / 10;
-    double variance = (sumSq / 10) - (mean * mean);
-    double stdDev = variance > 0 ? sqrt(variance) : 0.0;
-
-    // 標準偏差に基づいて閾値を調整（ノイズレベルに応じて）
-    double noiseLevel = stdDev * 2.0;
-    _adaptiveThreshold = max(_baseThreshold, noiseLevel);
-  }
-
-  // 歩行検出メソッド - 改良版ピーク検出
-  bool detectStep(double magnitude, int timestamp) {
-    // データを追加
-    addAccelerationData(magnitude, timestamp);
-
-    // データが十分にない場合
-    if (_filteredMagnitude.length < _windowSize) {
-      return false;
-    }
-
-    // ピーク検出（中央値がウィンドウ内で最大か確認）
-    int centerIndex = _filteredMagnitude.length - (_windowSize ~/ 2) - 1;
-    if (centerIndex < 0) return false;
-
-    double centerValue = _filteredMagnitude[centerIndex];
-    bool isPeak = true;
-
-    // ピークのチェック（前後の値と比較）
-    for (int i = 1; i <= _windowSize ~/ 4; i++) {
-      int beforeIndex = centerIndex - i;
-      int afterIndex = centerIndex + i;
-
-      if (beforeIndex >= 0 && _filteredMagnitude[beforeIndex] > centerValue) {
-        isPeak = false;
-        break;
-      }
-
-      if (afterIndex < _filteredMagnitude.length &&
-          _filteredMagnitude[afterIndex] > centerValue) {
-        isPeak = false;
-        break;
-      }
-    }
-
-    // ピークが閾値を超えているか確認
-    bool isOverThreshold = centerValue > _adaptiveThreshold;
-
-    // 前回のステップからの時間間隔チェック
-    int currentTime = _timestampBuffer[centerIndex];
-    int timeSinceLastStep = stepTimestamps.isNotEmpty
-        ? currentTime - stepTimestamps.last
-        : _maxStepInterval + 1;
-
-    bool isValidInterval = timeSinceLastStep >= _minStepInterval &&
-        timeSinceLastStep <= _maxStepInterval;
-
-    // ステップの信頼度を計算
-    double confidence = 0.0;
-    if (isPeak && isOverThreshold && isValidInterval) {
-      // 閾値からの距離に基づく信頼度（閾値の倍なら最大）
-      double thresholdRatio = min(centerValue / _adaptiveThreshold, 2.0) / 2.0;
-
-      // 間隔の理想値からの距離（理想は800ms前後）
-      double intervalOptimality = 0.0;
-      if (stepTimestamps.isNotEmpty) {
-        double idealInterval = 800.0; // ms
-        double intervalDiff = (timeSinceLastStep - idealInterval).abs();
-        intervalOptimality =
-            max(0.0, 1.0 - intervalDiff / 400.0); // 400msの差で0になる
-      } else {
-        intervalOptimality = 0.5; // 最初のステップ
-      }
-
-      // 最終信頼度を計算（閾値比率:70%, 間隔最適性:30%）
-      confidence = thresholdRatio * 0.7 + intervalOptimality * 0.3;
-
-      // ステップとして検出
-      print(
-          '  ✅ Step Detected! (Val: ${centerValue.toStringAsFixed(3)}, Thresh: ${_adaptiveThreshold.toStringAsFixed(3)}, Interval: $timeSinceLastStep ms, Confidence: ${(confidence * 100).toStringAsFixed(1)}%)');
-      stepTimestamps.add(currentTime);
-      stepConfidences.add(confidence);
-
-      // 古いデータを削除（最大20ステップを保持）
-      if (stepTimestamps.length > 20) {
-        stepTimestamps.removeAt(0);
-        stepConfidences.removeAt(0);
-      }
-
-      // BPM計算
-      calculateBpm();
-
-      // 信頼性スコアを更新
-      _updateReliabilityScore();
-
-      return true;
-    } else {
-      // デバッグログ：なぜステップと判定されなかったか
-      String reason = "";
-      if (!isPeak) reason += "Not Peak; ";
-      if (!isOverThreshold)
-        reason +=
-            "Under Threshold (${centerValue.toStringAsFixed(3)} < ${_adaptiveThreshold.toStringAsFixed(3)}); ";
-      if (!isValidInterval)
-        reason += "Invalid Interval ($timeSinceLastStep ms); ";
-      if (reason.isNotEmpty) {
-        // print('  ❌ Not a step: $reason');
-      }
-    }
-
-    return false;
-  }
-
-  // BPM計算メソッド - 信頼度重み付き
-  double? calculateBpm() {
-    if (stepTimestamps.length < 3) return null;
-
-    // 信頼度重み付きの間隔計算
-    double totalWeightedInterval = 0.0;
-    double totalWeight = 0.0;
-
-    for (int i = 1; i < stepTimestamps.length; i++) {
-      int interval = stepTimestamps[i] - stepTimestamps[i - 1];
-      double weight = (stepConfidences[i] + stepConfidences[i - 1]) / 2.0;
-
-      totalWeightedInterval += interval * weight;
-      totalWeight += weight;
-    }
-
-    if (totalWeight > 0) {
-      double avgInterval = totalWeightedInterval / totalWeight;
-      // BPM = 60000 / 平均間隔（ミリ秒）
-      lastCalculatedBpm = 60000 / avgInterval;
-
-      // 合理的な範囲内か確認（40-200 BPM）
-      if (lastCalculatedBpm! < 40 || lastCalculatedBpm! > 200) {
-        lastCalculatedBpm = null;
-      }
-
-      return lastCalculatedBpm;
-    }
-
-    return lastCalculatedBpm;
-  }
-
-  // 信頼性スコアの更新
-  void _updateReliabilityScore() {
-    if (stepConfidences.isEmpty) {
-      _currentReliabilityScore = 0.0;
-      return;
-    }
-
-    // 最新の5つのステップ（または全て）の平均信頼度を使用
-    int count = min(5, stepConfidences.length);
-    double sum = 0.0;
-
-    for (int i = stepConfidences.length - 1;
-        i >= stepConfidences.length - count;
-        i--) {
-      sum += stepConfidences[i];
-    }
-
-    _currentReliabilityScore = sum / count;
-  }
-
-  // 最後に検出されたステップの間隔（ミリ秒）
-  int? getLastStepInterval() {
-    if (stepTimestamps.length >= 2) {
-      return stepTimestamps.last - stepTimestamps[stepTimestamps.length - 2];
-    }
-    return null;
-  }
-
-  // 直近のステップの平均信頼度を取得
-  double getAverageConfidence() {
-    if (stepConfidences.isEmpty) return 0.0;
-
-    double sum = 0.0;
-    for (double confidence in stepConfidences) {
-      sum += confidence;
-    }
-
-    return sum / stepConfidences.length;
-  }
-
-  // 検出器のリセット
-  void reset() {
-    _magnitudeBuffer.clear();
-    _timestampBuffer.clear();
-    _filteredMagnitude.clear();
-    stepTimestamps.clear();
-    stepConfidences.clear();
-    lastCalculatedBpm = null;
-    _currentReliabilityScore = 0.0;
-    _lastMagnitude = 0.0;
-    _adaptiveThreshold = _baseThreshold;
-  }
-}
+// Definitions moved to lib/utils/step_detector.dart
