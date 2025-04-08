@@ -94,16 +94,16 @@ class GaitAnalysisService {
     this.minStepIntervalSec = 0.3, // 300ms (200 SPM)
     this.maxStepIntervalSec = 1.5, // 1500ms (40 SPM)
     this.minDynamicThreshold =
-        0.25, // 閾値の下限 0.25G（静止状態の1Gより低い値）- 以前は0.3G, 0.45G
-    this.thresholdFactor = 0.35, // ピークの35%を閾値に - 以前は0.4, 0.5
-    this.windowSizeSec = 20.0, // 20秒ウィンドウ
-    this.slideSizeSec = 2.0, // 2秒スライド
+        0.18, // 閾値の下限 0.18G（静止状態の1Gより低い値）- 以前は0.25G, 0.3G, 0.45G
+    this.thresholdFactor = 0.25, // ピークの25%を閾値に - 以前は0.35, 0.4, 0.5
+    this.windowSizeSec = 10.0, // 10秒ウィンドウ - 以前は20秒
+    this.slideSizeSec = 1.0, // 1秒スライド - 以前は2秒
     this.minSpm = 40.0,
     this.maxSpm = 200.0,
     this.historyBufferSize = 5, // フィルタ/ピーク検出に最低5サンプル使用
-    this.minPeakValleyDiff = 0.08, // ピークと谷の差が0.08G以上必要 - 以前は0.1G, 0.15G
+    this.minPeakValleyDiff = 0.05, // ピークと谷の差が0.05G以上必要 - 以前は0.08G, 0.1G, 0.15G
     this.minValleyToPeakDiff =
-        0.05, // 谷から次のピークまでの上昇量が0.05G以上必要 - 以前は0.08G, 0.12G
+        0.03, // 谷から次のピークまでの上昇量が0.03G以上必要 - 以前は0.05G, 0.08G, 0.12G
   })  : _filterAlpha = _calculateFilterAlpha(samplingRate, lowPassCutoffFreq),
         _dynamicThreshold = minDynamicThreshold, // 初期閾値は下限値に設定
         _sensorHistory = Queue<M5SensorData>(),
@@ -207,6 +207,15 @@ class GaitAnalysisService {
     // 条件: 閾値を超え、かつ上昇から下降に転じた点 (prevがピーク)
     if (!_isPotentialPeak) {
       // まだピーク候補がない場合、新しいピークを探す
+      // ピーク検出条件をデバッグ表示
+      if (_sampleCount % 50 == 0) {
+        print('ピーク検出チェック: '
+            'prev=${prevFilteredMag.toStringAsFixed(3)}G, '
+            '閾値=${_dynamicThreshold.toStringAsFixed(3)}G, '
+            'prevPrev=${prevPrevFilteredMag.toStringAsFixed(3)}G, '
+            'current=${currentFilteredMag.toStringAsFixed(3)}G');
+      }
+
       if (prevFilteredMag > _dynamicThreshold &&
           prevFilteredMag > prevPrevFilteredMag &&
           prevFilteredMag > currentFilteredMag) {
@@ -277,6 +286,9 @@ class GaitAnalysisService {
               'Step confirmed! Count: $_stepCount, Interval: ${intervalSeconds.toStringAsFixed(2)}s, '
               'Peak: ${_lastPeakMagnitude.toStringAsFixed(3)}, Valley: ${_valleyAfterPeak.toStringAsFixed(3)}, '
               'Reliability: ${(_reliability * 100).toStringAsFixed(1)}%');
+
+          // SPMをすぐに更新
+          _calculateSpmWithWindow(timestamp);
         } else {
           print(
               'Step rejected (too short interval: ${intervalSeconds.toStringAsFixed(2)}s < '
