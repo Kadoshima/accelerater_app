@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
 # M5StickCPlus2 センサーデータ送信システム 技術仕様書
 
