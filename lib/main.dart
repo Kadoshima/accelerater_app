@@ -152,20 +152,29 @@ class _BLEHomePageState extends State<BLEHomePage> {
   bool get isPlaying => _metronome.isPlaying;
   double get currentMusicBPM => _metronome.currentBpm;
   MusicTempo? selectedTempo;
-  // メトロノーム操作用テンポリスト (80, 100, 120, 140 BPM)
+  // メトロノーム操作用テンポリスト (80から10ずつ増加)
   final List<MusicTempo> metronomeTempoPresets = [
     MusicTempo(name: '80 BPM', bpm: 80.0),
+    MusicTempo(name: '90 BPM', bpm: 90.0),
     MusicTempo(name: '100 BPM', bpm: 100.0),
+    MusicTempo(name: '110 BPM', bpm: 110.0),
     MusicTempo(name: '120 BPM', bpm: 120.0),
+    MusicTempo(name: '130 BPM', bpm: 130.0),
     MusicTempo(name: '140 BPM', bpm: 140.0),
+    MusicTempo(name: '150 BPM', bpm: 150.0),
   ];
-  // 実験モード用テンポリスト (既存のまま)
+  // 実験モード用テンポリスト (10ずつ増加)
   final List<MusicTempo> experimentTempoPresets = [
     MusicTempo(name: '60 BPM', bpm: 60.0),
+    MusicTempo(name: '70 BPM', bpm: 70.0),
     MusicTempo(name: '80 BPM', bpm: 80.0),
+    MusicTempo(name: '90 BPM', bpm: 90.0),
     MusicTempo(name: '100 BPM', bpm: 100.0),
+    MusicTempo(name: '110 BPM', bpm: 110.0),
     MusicTempo(name: '120 BPM', bpm: 120.0),
+    MusicTempo(name: '130 BPM', bpm: 130.0),
     MusicTempo(name: '140 BPM', bpm: 140.0),
+    MusicTempo(name: '150 BPM', bpm: 150.0),
   ];
 
   // 実験モード関連

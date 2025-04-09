@@ -1,18 +1,6 @@
 import 'dart:collection';
 import 'dart:math' as math;
 import '../models/sensor_data.dart';
-import 'dart:typed_data';
-
-/// 内部データクラス: ステップイベント
-class _StepEvent {
-  final int timestamp; // ミリ秒
-  final double peakValue;
-  final double valleyValue;
-  final double reliability;
-
-  _StepEvent(
-      this.timestamp, this.peakValue, this.valleyValue, this.reliability);
-}
 
 /// 足首センサーデータから歩行ステップとピッチ(SPM)を検出するサービス
 /// FFT（高速フーリエ変換）を使用した周波数解析方式
@@ -26,6 +14,10 @@ class GaitAnalysisService {
   final double minSpm; // 最小SPM (40 = 非常にゆっくりした歩行)
   final double maxSpm; // 最大SPM (180 = 非常に速い走り)
   final double smoothingFactor; // 結果の平滑化係数 (0.0-1.0)
+  final double minReliability; // 最小信頼度しきい値 (0.0-1.0)
+  final double staticThreshold; // 静止判定の閾値（加速度の標準偏差）
+  final bool useSingleAxisOnly; // 単一軸のみを使用するか
+  final String verticalAxis; // 垂直方向に相当する軸 ('x', 'y', 'z')
 
   // --- 内部変数 ---
   final Queue<M5SensorData> _dataBuffer; // センサーデータバッファ
@@ -46,20 +38,28 @@ class GaitAnalysisService {
   /// コンストラクタ
   GaitAnalysisService({
     this.totalDataSeconds = 15, // 15秒分のデータを保持
-    this.windowSizeSeconds = 3, // 3秒のウィンドウでFFT計算
+    this.windowSizeSeconds = 7, // 7秒のウィンドウでFFT計算（大きくして安定性向上）
     this.slideIntervalSeconds = 1, // 1秒ごとにスライド
     this.minFrequency = 0.6, // 最小周波数 0.6Hz (36 SPM)
     this.maxFrequency = 3.0, // 最大周波数 3.0Hz (180 SPM)
     this.minSpm = 40.0, // 最小SPM (40 = 非常にゆっくりした歩行)
     this.maxSpm = 180.0, // 最大SPM (180 = 非常に速い走り)
-    this.smoothingFactor = 0.3, // 新しい値の30%を反映
+    this.smoothingFactor = 0.15, // 平滑化係数（小さくして安定性向上）
+    this.minReliability = 0.25, // 最小信頼度 (25%)
+    this.staticThreshold = 0.03, // 静止判定の閾値 (0.03G)
+    this.useSingleAxisOnly = true, // 単一軸のみを使用
+    this.verticalAxis = 'x', // 垂直方向の軸（デバイスが横置きならX軸）
   }) : _dataBuffer = Queue<M5SensorData>() {
     print('GaitAnalysisService初期化(FFT方式): '
         'バッファ=${totalDataSeconds}秒, '
         'ウィンドウ=${windowSizeSeconds}秒, '
         'スライド=${slideIntervalSeconds}秒, '
         'サンプリングレート=60Hz固定, '
-        '周波数範囲=${minFrequency}Hz-${maxFrequency}Hz');
+        '周波数範囲=${minFrequency}Hz-${maxFrequency}Hz, '
+        '信頼度閾値=${(minReliability * 100).toStringAsFixed(0)}%, '
+        '静止閾値=${staticThreshold}G, '
+        '垂直軸=${verticalAxis}, '
+        '単一軸のみ使用=${useSingleAxisOnly}');
   }
 
   /// 新しいセンサーデータを処理
@@ -109,6 +109,20 @@ class GaitAnalysisService {
     }
   }
 
+  /// センサーの指定された軸の値を取得
+  double _getAxisValue(M5SensorData data, String axis) {
+    switch (axis.toLowerCase()) {
+      case 'x':
+        return data.accX ?? 0.0;
+      case 'y':
+        return data.accY ?? 0.0;
+      case 'z':
+        return data.accZ ?? 0.0;
+      default:
+        return 0.0;
+    }
+  }
+
   /// FFT処理メイン
   void _processFFT() {
     if (_dataBuffer.length < windowSizeSeconds * _samplingRate) {
@@ -128,9 +142,28 @@ class GaitAnalysisService {
     List<M5SensorData> recentData =
         _dataBuffer.toList().sublist(_dataBuffer.length - windowSamples);
 
-    // マグニチュード値を取得
+    // 静止状態の判定
+    bool isStatic = _checkIfStatic(recentData);
+    if (isStatic) {
+      print('FFT: 静止状態検出 - スキップ');
+      // 静止状態ならSPMを0にリセット
+      if (_currentSpm > 0) {
+        print('FFT: 静止状態検出 - SPMリセット');
+        _currentSpm = 0.0;
+        _reliability = 0.0;
+      }
+      return;
+    }
+
+    // センサーデータの取得（指定軸のみか合成加速度か）
     for (var data in recentData) {
-      windowData.add(data.magnitude ?? 0.0);
+      if (useSingleAxisOnly) {
+        // 指定軸のデータのみを使用（通常は垂直方向）
+        windowData.add(_getAxisValue(data, verticalAxis));
+      } else {
+        // 合成加速度を使用（全方向の動きを考慮）
+        windowData.add(data.magnitude ?? 0.0);
+      }
     }
 
     // 前処理（トレンド除去とハミング窓適用）
@@ -146,6 +179,16 @@ class GaitAnalysisService {
 
     // 周波数ピーク検出
     double peakFrequency = _findPeakFrequency(magnitudes);
+
+    // 信頼度の計算（最大値と全体の比率から）
+    double reliability = _calculateReliability(magnitudes, peakFrequency);
+
+    // 信頼度が低いピークは無視
+    if (reliability < minReliability) {
+      print(
+          'FFT: 信頼度不足 (${(reliability * 100).toStringAsFixed(1)}% < ${(minReliability * 100).toStringAsFixed(1)}%) - スキップ');
+      return;
+    }
 
     // 周波数からSPMへの変換
     if (peakFrequency > 0) {
@@ -176,8 +219,7 @@ class GaitAnalysisService {
             (1 - smoothingFactor) * _currentSpm + smoothingFactor * newSpm;
       }
 
-      // 信頼度の計算（最大値と全体の比率から）
-      _reliability = _calculateReliability(magnitudes, peakFrequency);
+      _reliability = reliability;
 
       // ステップ数の更新（周波数 * 経過時間）
       double elapsedTimeSinceLastProcess = slideIntervalSeconds.toDouble();
@@ -199,6 +241,38 @@ class GaitAnalysisService {
         _reliability = 0.0;
       }
     }
+  }
+
+  /// 静止状態かどうかをチェック
+  bool _checkIfStatic(List<M5SensorData> data) {
+    if (data.isEmpty) return true;
+
+    // 垂直方向の加速度の標準偏差を計算
+    List<double> accValues = [];
+    for (var item in data) {
+      double axisValue = _getAxisValue(item, verticalAxis);
+      accValues.add(axisValue);
+    }
+
+    if (accValues.isEmpty) return true;
+
+    // 平均値
+    double mean = accValues.reduce((a, b) => a + b) / accValues.length;
+
+    // 標準偏差
+    double sumSquaredDiff = 0;
+    for (var val in accValues) {
+      double diff = val - mean;
+      sumSquaredDiff += diff * diff;
+    }
+    double stdDev = math.sqrt(sumSquaredDiff / accValues.length);
+
+    // 標準偏差が閾値未満なら静止状態と判断
+    bool isStatic = stdDev < staticThreshold;
+    if (isStatic) {
+      print('静止状態検出: 標準偏差=$stdDev < 閾値=$staticThreshold');
+    }
+    return isStatic;
   }
 
   /// データの前処理（トレンド除去とハミング窓適用）
@@ -286,13 +360,16 @@ class GaitAnalysisService {
     return magnitudes;
   }
 
-  /// 周波数ピークの検出
+  /// 絶対値を計算する内部ヘルパー関数（math.abs代替）
+  double _abs(double value) {
+    return value < 0 ? -value : value;
+  }
+
+  /// 周波数ピークの検出（高速歩行時の問題対応）
   double _findPeakFrequency(List<double> magnitudes) {
     int n = magnitudes.length;
-    int peakIndex = -1;
-    double peakValue = 0.0;
 
-    // 歩行周波数範囲内のピークを探す
+    // 歩行周波数範囲内のピークを探す（通常の全周波数範囲）
     int minBin = (minFrequency * windowSizeSeconds).round();
     int maxBin = (maxFrequency * windowSizeSeconds).round();
 
@@ -300,21 +377,113 @@ class GaitAnalysisService {
     minBin = math.max(1, minBin); // 0より大きい（DCは除外）
     maxBin = math.min(n - 1, maxBin); // 配列範囲内
 
-    // ピーク候補の検出
-    for (int i = minBin; i <= maxBin; i++) {
-      if (magnitudes[i] > peakValue) {
-        peakValue = magnitudes[i];
-        peakIndex = i;
+    // ピーク候補を保存するための変数
+    List<_FrequencyPeak> peaks = [];
+
+    // 周波数スペクトルからすべての局所的ピークを検出
+    for (int i = minBin + 1; i < maxBin - 1; i++) {
+      // 局所的なピーク（両隣より大きい値）を検出
+      if (magnitudes[i] > magnitudes[i - 1] &&
+          magnitudes[i] > magnitudes[i + 1]) {
+        double freq = i / windowSizeSeconds.toDouble();
+        double amplitude = magnitudes[i];
+
+        // 平均振幅の計算（ノイズレベル推定用）
+        double localMean = 0.0;
+        int sampleCount = 0;
+        for (int j = math.max(minBin, i - 5);
+            j <= math.min(maxBin, i + 5);
+            j++) {
+          if (j != i) {
+            // ピーク自体は除外
+            localMean += magnitudes[j];
+            sampleCount++;
+          }
+        }
+        localMean = localMean / sampleCount;
+
+        // SNR計算（信号対ノイズ比）
+        double snr = amplitude / (localMean + 0.001); // ゼロ除算防止
+
+        peaks.add(_FrequencyPeak(freq, amplitude, snr));
       }
     }
 
-    if (peakIndex > 0) {
-      // バイン番号から周波数への変換 (f = bin * fs / N)
-      double frequency = peakIndex / (windowSizeSeconds.toDouble());
-      return frequency;
+    // ピークが見つからない場合
+    if (peaks.isEmpty) {
+      return 0.0;
     }
 
-    return 0.0; // ピークなし
+    // 振幅でピークをソート（大きい順）
+    peaks.sort((a, b) => b.amplitude.compareTo(a.amplitude));
+
+    // 前回の検出周波数を取得（安定性向上のため）
+    double? previousFreq =
+        _recentFrequencies.isNotEmpty ? _recentFrequencies.last : null;
+
+    // 倍数関係のチェック用の閾値（許容誤差）
+    const double freqRatioTolerance = 0.15; // 15%誤差許容
+
+    // 最大振幅のピークを取得
+    double mainPeakFreq = peaks[0].frequency;
+
+    // 前回の周波数がある場合は一貫性チェック
+    if (previousFreq != null && previousFreq > 0) {
+      // 前回からの変化率を計算
+      double ratio = mainPeakFreq / previousFreq;
+
+      // 高速歩行時の検出問題対策：
+      // 1. 歩行が速い場合（前回のSPMが高い）で、今回の検出が約半分の場合、2倍の値を使用
+      if (previousFreq > 1.5 && // 90SPM以上の速い歩行
+          _abs(ratio - 0.5) < freqRatioTolerance) {
+        // 約半分になった
+
+        // 検出した周波数の2倍の周波数が妥当かチェック
+        double doubledFreq = mainPeakFreq * 2.0;
+
+        // 2倍の周波数が許容範囲内なら、それを採用
+        if (doubledFreq <= maxFrequency) {
+          print(
+              '高速歩行検出: 周波数を補正 ${mainPeakFreq.toStringAsFixed(2)}Hz → ${doubledFreq.toStringAsFixed(2)}Hz');
+          return doubledFreq;
+        }
+      }
+
+      // 2. 逆に、前回が低速で今回が急に2倍になった場合は、誤検出の可能性を考慮
+      if (previousFreq < 1.5 && // 低〜中速の歩行
+          _abs(ratio - 2.0) < freqRatioTolerance) {
+        // 約2倍になった
+
+        // 他のピークも確認
+        for (var peak in peaks.skip(1)) {
+          // 2番目以降のピークを確認
+          // 前回の周波数に近いピークがあれば、それを優先
+          if (_abs(peak.frequency / previousFreq - 1.0) < freqRatioTolerance) {
+            print(
+                '異常な周波数変化を検出: 代替ピークを採用 ${mainPeakFreq.toStringAsFixed(2)}Hz → ${peak.frequency.toStringAsFixed(2)}Hz');
+            return peak.frequency;
+          }
+        }
+      }
+    }
+
+    // 高速検出の追加チェック（前回の結果がない場合でも）
+    // 周波数スペクトルで高調波関係をチェック
+    for (var peak in peaks.skip(1)) {
+      // 2番目以降のピークを確認
+      // メインピークの約2倍の周波数のピークがあり、それが十分に強い場合
+      if (_abs(peak.frequency / mainPeakFreq - 2.0) < freqRatioTolerance &&
+          peak.snr > peaks[0].snr * 0.6) {
+        // 振幅が主ピークの60%以上
+
+        // 2歩で1周期と判断されている可能性が高い場合、高い周波数を採用
+        print(
+            '周波数倍数関係を検出: 高周波を採用 ${mainPeakFreq.toStringAsFixed(2)}Hz → ${peak.frequency.toStringAsFixed(2)}Hz');
+        return peak.frequency;
+      }
+    }
+
+    return mainPeakFreq;
   }
 
   /// 信頼度の計算
@@ -399,4 +568,17 @@ class _Complex {
 
   @override
   String toString() => '($real, ${imag}i)';
+}
+
+/// 周波数ピーク情報を保持するクラス
+class _FrequencyPeak {
+  final double frequency; // 周波数(Hz)
+  final double amplitude; // 振幅値
+  final double snr; // 信号対ノイズ比
+
+  _FrequencyPeak(this.frequency, this.amplitude, this.snr);
+
+  @override
+  String toString() =>
+      'Peak(${frequency.toStringAsFixed(2)}Hz, amp=${amplitude.toStringAsFixed(2)}, SNR=${snr.toStringAsFixed(2)})';
 }
