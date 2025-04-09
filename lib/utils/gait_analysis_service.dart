@@ -37,17 +37,17 @@ class GaitAnalysisService {
 
   /// コンストラクタ
   GaitAnalysisService({
-    this.totalDataSeconds = 25, // 25秒分のデータを保持（ウィンドウサイズに合わせて増加）
-    this.windowSizeSeconds = 15, // 15秒のウィンドウでFFT計算（最大精度優先）
+    this.totalDataSeconds = 20, // 25秒分のデータを保持（ウィンドウサイズに合わせて増加）
+    this.windowSizeSeconds = 10, // 15秒のウィンドウでFFT計算（最大精度優先）
     this.slideIntervalSeconds = 1, // 1秒ごとにスライド
     this.minFrequency = 1.0, // 最小周波数 1.0Hz (60 SPM)
     this.maxFrequency = 2.67, // 最大周波数 2.67Hz (160 SPM)
     this.minSpm = 60.0, // 最小SPM (60 = ゆっくりした歩行)
     this.maxSpm = 160.0, // 最大SPM (160 = 速い歩行)
-    this.smoothingFactor = 0.2, // 平滑化係数（反応性向上のため0.1から0.2に変更）
+    this.smoothingFactor = 0.3, // 平滑化係数（反応性向上のため0.1から0.2に変更）
     this.minReliability = 0.25, // 最小信頼度 (25%)
-    this.staticThreshold = 0.03, // 静止判定の閾値 (0.03G)
-    this.useSingleAxisOnly = true, // 単一軸のみを使用
+    this.staticThreshold = 0.02, // 静止判定の閾値 (0.03G)
+    this.useSingleAxisOnly = false, // 単一軸のみを使用
     this.verticalAxis = 'x', // 垂直方向の軸（デバイスが横置きならX軸）
   }) : _dataBuffer = Queue<M5SensorData>() {
     print('GaitAnalysisService初期化(FFT方式): '

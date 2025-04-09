@@ -305,7 +305,30 @@ class _BLEHomePageState extends State<BLEHomePage> {
   Future<void> _changeTempo(MusicTempo tempo) async {
     try {
       await _metronome.changeTempo(tempo.bpm);
-      selectedTempo = tempo;
+      // 適切なリストから一致するBPMを持つテンポを探す
+      MusicTempo? matchedTempo;
+
+      // 実験モードとメトロノームモードの両方のリストを確認
+      for (var t in experimentTempoPresets) {
+        if (t.bpm == tempo.bpm) {
+          matchedTempo = t;
+          break;
+        }
+      }
+
+      // 見つからなければメトロノームリストも確認
+      if (matchedTempo == null) {
+        for (var t in metronomeTempoPresets) {
+          if (t.bpm == tempo.bpm) {
+            matchedTempo = t;
+            break;
+          }
+        }
+      }
+
+      // いずれかのリストで見つかったテンポを使用、なければ引数をそのまま使用
+      selectedTempo = matchedTempo ?? tempo;
+
       if (mounted) {
         setState(() {});
       }
@@ -320,6 +343,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
       await _metronome.changeTempo(bpm);
       if (mounted) {
         setState(() {
+          // 既存のmetronomeTempoPresetsから最も近いものを選択し、
+          // 新しいインスタンスを作成しないようにする
           selectedTempo = _findNearestTempoPreset(bpm);
         });
       }
@@ -381,7 +406,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     }).toList(),
                     onChanged: (value) {
                       setState(() {
-                        tempTempo = value!;
+                        if (value != null) {
+                          // 必ず元のリストのインスタンスを使用
+                          tempTempo = experimentTempoPresets
+                              .firstWhere((item) => item.bpm == value.bpm);
+                        }
                       });
                     },
                   ),
@@ -419,8 +448,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     tempSubjectId =
                         'S${DateFormat('MMddHHmm').format(DateTime.now())}';
                   }
-                  // 選択されたテンポと時間を記録
-                  selectedTempo = tempTempo;
+                  // 選択されたテンポと時間を記録（元のリストから取得）
+                  selectedTempo = experimentTempoPresets
+                      .firstWhere((item) => item.bpm == tempTempo.bpm);
                   experimentDurationSeconds = tempDuration;
                   Navigator.of(context).pop(tempSubjectId);
                 },
@@ -2094,12 +2124,24 @@ class _BLEHomePageState extends State<BLEHomePage> {
     );
   }
 
-  // 指定したBPMに最も近いテンポプリセットを見つける
+  // 最も近いテンポプリセットを見つける
   MusicTempo _findNearestTempoPreset(double bpm) {
-    MusicTempo nearest = experimentTempoPresets[0];
-    double minDiff = (experimentTempoPresets[0].bpm - bpm).abs();
+    // 使用するテンポプリセットリストを決定（実験モードかどうかで切り替え）
+    final tempoList =
+        isExperimentMode ? experimentTempoPresets : metronomeTempoPresets;
 
-    for (var tempo in experimentTempoPresets) {
+    // 完全に一致するBPMがあるか確認
+    for (var tempo in tempoList) {
+      if (tempo.bpm == bpm) {
+        return tempo;
+      }
+    }
+
+    // 差が最小のものを探す
+    MusicTempo nearest = tempoList[0];
+    double minDiff = (nearest.bpm - bpm).abs();
+
+    for (var tempo in tempoList) {
       double diff = (tempo.bpm - bpm).abs();
       if (diff < minDiff) {
         minDiff = diff;
@@ -2109,77 +2151,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     return nearest;
   }
-
-  // 段階的テンポ変更を開始（未使用）
-  /*
-  void _startGradualTempoChange() {
-    if (isGradualTempoChangeEnabled || !isPlaying) return;
-
-    // 自動テンポ調整を無効化
-    isAutoAdjustEnabled = false;
-
-    // 初期設定
-    initialBPM = currentMusicBPM;
-    isGradualTempoChangeEnabled = true;
-
-    // 現在のBPMと目標BPMから必要なステップ数を計算
-    double totalChange = (targetBPM - initialBPM).abs();
-    double totalMinutes = totalChange / tempoChangeStep;
-    int totalSteps = (totalMinutes * 60 / tempoChangeIntervalSeconds).ceil();
-    double actualStepBPM = totalChange / totalSteps; // 実際のステップサイズ
-
-    // テンポ変化の方向（増加か減少か）
-    int direction = targetBPM > initialBPM ? 1 : -1;
-
-    // 開始メッセージ
-    print(
-        '段階的テンポ変更開始: $initialBPM → $targetBPM BPM（$totalSteps ステップ、${tempoChangeIntervalSeconds}秒毎、${actualStepBPM.abs().toStringAsFixed(2)} BPM/ステップ）');
-
-    int currentStep = 0;
-
-    // タイマーでテンポを徐々に変更
-    gradualTempoTimer =
-        Timer.periodic(Duration(seconds: tempoChangeIntervalSeconds), (timer) {
-      currentStep++;
-
-      // 新しいBPMを計算
-      double newBPM = initialBPM + (actualStepBPM * currentStep * direction);
-
-      // 目標に達したかチェック
-      if ((direction > 0 && newBPM >= targetBPM) ||
-          (direction < 0 && newBPM <= targetBPM)) {
-        newBPM = targetBPM;
-        _stopGradualTempoChange(); // 目標達成で終了
-      }
-
-      // テンポを変更
-      _changeMusicTempo(newBPM);
-
-      print('段階的テンポ変更: ステップ $currentStep/$totalSteps - $newBPM BPM');
-
-      // 実験データの記録（実験モードでは記録済み）
-      if (!isExperimentMode && calculatedBpmFromRaw != null) {
-        final record = ExperimentRecord(
-          timestamp: DateTime.now(),
-          targetBPM: newBPM,
-          detectedBPM: calculatedBpmFromRaw,
-          reliability: stepDetector.reliabilityScore,
-          accX: latestData?.accX,
-          accY: latestData?.accY,
-          accZ: latestData?.accZ,
-          magnitude: latestData?.magnitude,
-        );
-
-        experimentRecords.add(record);
-      }
-
-      // UIを更新
-      if (mounted) {
-        setState(() {});
-      }
-    });
-  }
-  */
 
   // 加速度データからBPMを計算する関数
   double? calculateBPMFromAcceleration(List<M5SensorData> data) {
