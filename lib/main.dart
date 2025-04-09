@@ -117,6 +117,15 @@ class MusicTempo {
   final double bpm;
 
   MusicTempo({required this.name, required this.bpm});
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is MusicTempo && other.name == name && other.bpm == bpm;
+  }
+
+  @override
+  int get hashCode => name.hashCode ^ bpm.hashCode;
 }
 
 /// ホーム画面

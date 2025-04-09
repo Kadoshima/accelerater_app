@@ -103,9 +103,9 @@ class GaitAnalysisService {
       int estimatedRate = ((_dataBuffer.length - 1) / durationSeconds).round();
 
       // 実際のサンプリングレートをログ出力（参考情報として）
-      print(
-          '実際のサンプリングレート: ${estimatedRate}Hz (データ数: ${_dataBuffer.length}, 期間: ${durationSeconds.toStringAsFixed(2)}秒)');
-      print('固定サンプリングレート60Hzを使用中');
+      // print(
+      //     '実際のサンプリングレート: ${estimatedRate}Hz (データ数: ${_dataBuffer.length}, 期間: ${durationSeconds.toStringAsFixed(2)}秒)');
+      // print('固定サンプリングレート60Hzを使用中');
     }
   }
 
