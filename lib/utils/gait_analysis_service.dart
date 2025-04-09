@@ -18,6 +18,7 @@ class GaitAnalysisService {
   final double staticThreshold; // 静止判定の閾値（加速度の標準偏差）
   final bool useSingleAxisOnly; // 単一軸のみを使用するか
   final String verticalAxis; // 垂直方向に相当する軸 ('x', 'y', 'z')
+  final double correctionFactor; // 補正係数（実測値との誤差を補正）
 
   // --- 内部変数 ---
   final Queue<M5SensorData> _dataBuffer; // センサーデータバッファ
@@ -49,6 +50,7 @@ class GaitAnalysisService {
     this.staticThreshold = 0.03, // 静止判定の閾値 (0.03G)
     this.useSingleAxisOnly = true, // 単一軸のみを使用
     this.verticalAxis = 'x', // 垂直方向の軸（デバイスが横置きならX軸）
+    this.correctionFactor = 0.93, // 補正係数（検出値から実測値への変換: 実測値≒検出値×0.93）
   }) : _dataBuffer = Queue<M5SensorData>() {
     print('GaitAnalysisService初期化(FFT方式): '
         'バッファ=${totalDataSeconds}秒, '
@@ -59,7 +61,8 @@ class GaitAnalysisService {
         '信頼度閾値=${(minReliability * 100).toStringAsFixed(0)}%, '
         '静止閾値=${staticThreshold}G, '
         '垂直軸=${verticalAxis}, '
-        '単一軸のみ使用=${useSingleAxisOnly}');
+        '単一軸のみ使用=${useSingleAxisOnly}, '
+        '補正係数=${correctionFactor}');
   }
 
   /// 新しいセンサーデータを処理
@@ -195,6 +198,9 @@ class GaitAnalysisService {
       // 周波数をSPMに変換 (Hz * 60 = SPM)
       double newSpm = peakFrequency * 60.0;
 
+      // 補正係数を適用（検出値のバイアスを修正）
+      newSpm = newSpm * correctionFactor;
+
       // SPMを現実的な範囲に制限
       if (newSpm < minSpm) {
         print('FFT: 下限値を適用: $newSpm → $minSpm');
@@ -227,7 +233,8 @@ class GaitAnalysisService {
       _stepCount += newSteps;
 
       print('FFT: SPM更新 $previousSpm → ${_currentSpm.toStringAsFixed(1)} '
-          '(周波数=${peakFrequency.toStringAsFixed(2)}Hz, '
+          '(生周波数=${peakFrequency.toStringAsFixed(2)}Hz, '
+          '補正後=${(peakFrequency * 60 * correctionFactor).toStringAsFixed(1)} SPM, '
           '信頼度=${(_reliability * 100).toStringAsFixed(1)}%, '
           'ステップ+$newSteps)');
     } else {
