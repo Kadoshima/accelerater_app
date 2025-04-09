@@ -41,7 +41,7 @@ class GaitAnalysisService {
     this.windowSizeSeconds = 10, // 15秒のウィンドウでFFT計算（最大精度優先）
     this.slideIntervalSeconds = 1, // 1秒ごとにスライド
     this.minFrequency = 1.0, // 最小周波数 1.0Hz (60 SPM)
-    this.maxFrequency = 2.67, // 最大周波数 2.67Hz (160 SPM)
+    this.maxFrequency = 3.50, // 最大周波数 2.67Hz (160 SPM)
     this.minSpm = 60.0, // 最小SPM (60 = ゆっくりした歩行)
     this.maxSpm = 160.0, // 最大SPM (160 = 速い歩行)
     this.smoothingFactor = 0.3, // 平滑化係数（反応性向上のため0.1から0.2に変更）
@@ -194,6 +194,10 @@ class GaitAnalysisService {
     if (peakFrequency > 0) {
       // 周波数をSPMに変換 (Hz * 60 = SPM)
       double newSpm = peakFrequency * 60.0;
+
+      // 7%低く補正係数を適用（検出値が実際より7%高いため）
+      double correctionFactor = 0.93;
+      newSpm = newSpm * correctionFactor;
 
       // SPMを現実的な範囲に制限
       if (newSpm < minSpm) {

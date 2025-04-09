@@ -129,6 +129,15 @@ class MusicTempo {
   int get hashCode => name.hashCode ^ bpm.hashCode;
 }
 
+// フィードバック実験の各フェーズ
+enum FeedbackPhase {
+  initial, // 初期状態
+  freeWalking, // 自由歩行フェーズ（ユーザーの自然な歩行ピッチを測定）
+  constantTempo, // 一定テンポフェーズ（ユーザーの歩行に合わせた一定テンポの音楽）
+  incremental, // 漸増フェーズ（5 BPMずつテンポを上げる）
+  adaptive // 適応フェーズ（ユーザーの疲労に応じてテンポを調整）
+}
+
 /// ホーム画面
 class BLEHomePage extends StatefulWidget {
   const BLEHomePage({Key? key}) : super(key: key);
@@ -249,6 +258,32 @@ class _BLEHomePageState extends State<BLEHomePage> {
       dotenv.env['AZURE_CONNECTION_STRING'] ?? '';
   String get containerName =>
       dotenv.env['AZURE_CONTAINER_NAME'] ?? 'accelerationdata';
+
+  // フィードバック実験モード関連
+  bool isFeedbackExperimentMode = false; // フィードバック実験モードフラグ
+
+  // 現在のフィードバックフェーズ
+  FeedbackPhase currentFeedbackPhase = FeedbackPhase.initial;
+
+  // フィードバック実験の設定と状態
+  double userBaselineBPM = 0.0; // ユーザーの基準歩行ピッチ
+  double targetBPM = 0.0; // 目標BPM
+  double lastAdjustedBPM = 0.0; // 最後に調整されたBPM
+  int phaseStabilitySeconds = 0; // 現在のフェーズでの安定秒数
+
+  // 歩行ピッチ安定判定用
+  DateTime? stableWalkingStartTime;
+  List<double> recentBPMs = []; // 最近の歩行ピッチ記録
+  bool isWalkingStable = false;
+  static const int requiredStableSeconds = 30; // 安定と判断するために必要な秒数
+  static const double stableThreshold = 5.0; // 安定していると判断するBPM変動の閾値
+
+  // テンポ調整用タイマー
+  Timer? feedbackTimer;
+
+  // 歩行ピッチ記録用
+  List<double> walkingBPMHistory = [];
+  double averageWalkingBPM = 0.0;
 
   @override
   void initState() {
@@ -923,9 +958,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
           // メインコンテンツ - Expandedで残りの空間を使う
           Expanded(
-            child: isExperimentMode
-                ? _buildExperimentModeUI() // 実験モードUI
-                : _buildDataMonitorModeUI(), // モニターモードUI
+            child: isFeedbackExperimentMode
+                ? _buildFeedbackExperimentModeUI() // フィードバック実験モードUI
+                : isExperimentMode
+                    ? _buildExperimentModeUI() // 実験モードUI
+                    : _buildDataMonitorModeUI(), // モニターモードUI
           ),
 
           // 実験モード切り替えボタン - 常に下部に表示
@@ -943,25 +980,63 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 ),
               ],
             ),
-            child: ElevatedButton.icon(
-              icon: Icon(isExperimentMode
-                  ? Icons.monitor_heart_outlined
-                  : Icons.science_outlined),
-              label: Text(isExperimentMode ? 'モニターモードに戻る' : '精度評価モードへ'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: isExperimentMode ? Colors.blue : Colors.amber,
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              ),
-              onPressed: () {
-                setState(() {
-                  isExperimentMode = !isExperimentMode;
-                  if (!isExperimentMode) {
-                    isRecording = false;
-                  }
-                });
-              },
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: Icon(isExperimentMode
+                        ? Icons.monitor_heart_outlined
+                        : Icons.science_outlined),
+                    label: Text(isExperimentMode ? 'モニターモードに戻る' : '精度評価モードへ'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor:
+                          isExperimentMode ? Colors.blue : Colors.amber,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        isExperimentMode = !isExperimentMode;
+                        isFeedbackExperimentMode = false; // フィードバック実験モードをオフ
+                        if (!isExperimentMode) {
+                          isRecording = false;
+                        }
+                      });
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: Icon(isFeedbackExperimentMode
+                        ? Icons.monitor_heart_outlined
+                        : Icons.psychology_outlined),
+                    label: Text(
+                        isFeedbackExperimentMode ? 'モニターモードに戻る' : 'フィードバック実験へ'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isFeedbackExperimentMode
+                          ? Colors.blue
+                          : Colors.deepPurple,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    onPressed: () {
+                      if (isFeedbackExperimentMode) {
+                        _stopFeedbackExperiment();
+                      } else {
+                        setState(() {
+                          isFeedbackExperimentMode = true;
+                          isExperimentMode = false; // 実験モードをオフ
+                          isRecording = false;
+                          currentFeedbackPhase = FeedbackPhase.initial;
+                        });
+                        _showFeedbackExperimentSettings();
+                      }
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -2739,6 +2814,832 @@ class _BLEHomePageState extends State<BLEHomePage> {
     } catch (e) {
       print('切断エラー: $e');
     }
+  }
+
+  // フィードバック実験モードの設定ダイアログを表示
+  void _showFeedbackExperimentSettings() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('フィードバック実験設定'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      title: const Text('自由歩行フェーズ',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('ユーザーの自然な歩行ピッチを測定します'),
+                      trailing: Radio<FeedbackPhase>(
+                        value: FeedbackPhase.freeWalking,
+                        groupValue: currentFeedbackPhase,
+                        onChanged: (value) {
+                          setState(() {
+                            currentFeedbackPhase = value!;
+                          });
+                        },
+                      ),
+                    ),
+                    ListTile(
+                      title: const Text('一定テンポフェーズ',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('測定したピッチに合わせた音楽を流します'),
+                      trailing: Radio<FeedbackPhase>(
+                        value: FeedbackPhase.constantTempo,
+                        groupValue: currentFeedbackPhase,
+                        onChanged: (value) {
+                          setState(() {
+                            currentFeedbackPhase = value!;
+                          });
+                        },
+                      ),
+                    ),
+                    ListTile(
+                      title: const Text('漸増フェーズ',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('5 BPMずつテンポを上げていきます'),
+                      trailing: Radio<FeedbackPhase>(
+                        value: FeedbackPhase.incremental,
+                        groupValue: currentFeedbackPhase,
+                        onChanged: (value) {
+                          setState(() {
+                            currentFeedbackPhase = value!;
+                          });
+                        },
+                      ),
+                    ),
+                    ListTile(
+                      title: const Text('適応フェーズ',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('ユーザーの疲労に合わせてテンポを調整します'),
+                      trailing: Radio<FeedbackPhase>(
+                        value: FeedbackPhase.adaptive,
+                        groupValue: currentFeedbackPhase,
+                        onChanged: (value) {
+                          setState(() {
+                            currentFeedbackPhase = value!;
+                          });
+                        },
+                      ),
+                    ),
+                    const Divider(),
+                    if (userBaselineBPM > 0) ...[
+                      Text(
+                          '測定された基準ピッチ: ${userBaselineBPM.toStringAsFixed(1)} BPM',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                    ],
+                    if (targetBPM > 0) ...[
+                      Text('現在の目標テンポ: ${targetBPM.toStringAsFixed(1)} BPM',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                  child: const Text('キャンセル'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    _startFeedbackExperiment();
+                  },
+                  child: const Text('開始'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // フィードバック実験を開始
+  void _startFeedbackExperiment() {
+    if (!isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('デバイスに接続してください')),
+      );
+      return;
+    }
+
+    setState(() {
+      isFeedbackExperimentMode = true;
+
+      // 自由歩行フェーズから開始する場合
+      if (currentFeedbackPhase == FeedbackPhase.initial ||
+          currentFeedbackPhase == FeedbackPhase.freeWalking) {
+        currentFeedbackPhase = FeedbackPhase.freeWalking;
+        userBaselineBPM = 0.0;
+        walkingBPMHistory.clear();
+      }
+
+      // 既に測定されている場合、その値を使用
+      if (userBaselineBPM > 0 &&
+          (currentFeedbackPhase == FeedbackPhase.constantTempo ||
+              currentFeedbackPhase == FeedbackPhase.incremental ||
+              currentFeedbackPhase == FeedbackPhase.adaptive)) {
+        targetBPM = userBaselineBPM;
+        if (currentFeedbackPhase == FeedbackPhase.incremental) {
+          // 漸増フェーズでは5 BPM上げる
+          targetBPM = _roundToNearest5(userBaselineBPM + 5);
+        }
+      }
+
+      stableWalkingStartTime = null;
+      isWalkingStable = false;
+      phaseStabilitySeconds = 0;
+      recentBPMs.clear();
+    });
+
+    // フィードバックループを開始
+    _startFeedbackLoop();
+
+    // メトロノームを適切なタイミングで開始
+    if (currentFeedbackPhase != FeedbackPhase.freeWalking) {
+      if (targetBPM > 0) {
+        _changeMusicTempo(targetBPM);
+        if (!isPlaying) {
+          _togglePlayback();
+        }
+      }
+    } else {
+      // 自由歩行フェーズでは音楽を停止
+      if (isPlaying) {
+        _togglePlayback();
+      }
+    }
+  }
+
+  // 5単位に丸める
+  double _roundToNearest5(double value) {
+    return (value / 5.0).round() * 5.0;
+  }
+
+  // フィードバックループを開始
+  void _startFeedbackLoop() {
+    // 既存のタイマーをキャンセル
+    feedbackTimer?.cancel();
+
+    // 1秒ごとにフィードバック処理を実行
+    feedbackTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!isFeedbackExperimentMode || !mounted) {
+        timer.cancel();
+        return;
+      }
+
+      // 現在の歩行ピッチを取得
+      double currentBPM = gaitAnalysisService.currentSpm;
+
+      // 有効なBPMがない場合はスキップ
+      if (currentBPM <= 0) return;
+
+      // 最近のBPMリストを更新（最大10秒分）
+      recentBPMs.add(currentBPM);
+      if (recentBPMs.length > 10) {
+        recentBPMs.removeAt(0);
+      }
+
+      // 現在のフェーズに基づいて処理
+      switch (currentFeedbackPhase) {
+        case FeedbackPhase.freeWalking:
+          _handleFreeWalkingPhase(currentBPM);
+          break;
+        case FeedbackPhase.constantTempo:
+          _handleConstantTempoPhase(currentBPM);
+          break;
+        case FeedbackPhase.incremental:
+          _handleIncrementalPhase(currentBPM);
+          break;
+        case FeedbackPhase.adaptive:
+          _handleAdaptivePhase(currentBPM);
+          break;
+        default:
+          break;
+      }
+    });
+  }
+
+  // 自由歩行フェーズの処理
+  void _handleFreeWalkingPhase(double currentBPM) {
+    // 歩行ピッチをリストに追加
+    walkingBPMHistory.add(currentBPM);
+
+    // 最低30秒のデータが集まったら、後半10秒の平均を計算
+    if (walkingBPMHistory.length >= 30) {
+      List<double> lastTenSeconds =
+          walkingBPMHistory.sublist(walkingBPMHistory.length - 10);
+      averageWalkingBPM =
+          lastTenSeconds.reduce((a, b) => a + b) / lastTenSeconds.length;
+      averageWalkingBPM = _roundToNearest5(averageWalkingBPM); // 5単位に丸める
+
+      // 測定完了時の処理
+      setState(() {
+        userBaselineBPM = averageWalkingBPM;
+        targetBPM = userBaselineBPM;
+        currentFeedbackPhase = FeedbackPhase.constantTempo;
+        phaseStabilitySeconds = 0;
+        stableWalkingStartTime = null;
+        isWalkingStable = false;
+        recentBPMs.clear();
+      });
+
+      // 測定結果を通知
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              '自由歩行ピッチの測定が完了しました: ${userBaselineBPM.toStringAsFixed(1)} BPM'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+
+      // 適切なテンポで音楽を開始
+      _changeMusicTempo(targetBPM);
+      if (!isPlaying) {
+        _togglePlayback();
+      }
+
+      print('自由歩行フェーズ完了: 平均歩行ピッチ = ${userBaselineBPM.toStringAsFixed(1)} BPM');
+    }
+  }
+
+  // 一定テンポフェーズの処理
+  void _handleConstantTempoPhase(double currentBPM) {
+    // 現在の音楽テンポと歩行ピッチの差を計算
+    double diffBPM = (currentBPM - targetBPM).abs();
+
+    // テンポの調整が必要か判断（10以上の差がある場合）
+    bool needsAdjustment = diffBPM >= 10.0;
+
+    // 調整が必要で、かつ前回の調整から3秒以上経過している場合
+    if (needsAdjustment && recentBPMs.length >= 3) {
+      // 誤検知防止のため、3秒間の平均で判断
+      double avgRecentBPM =
+          recentBPMs.sublist(recentBPMs.length - 3).reduce((a, b) => a + b) / 3;
+      double avgDiff = (avgRecentBPM - targetBPM).abs();
+
+      if (avgDiff >= 10.0) {
+        // 新しいテンポを計算
+        double newBPM = _roundToNearest5(avgRecentBPM);
+
+        // テンポを調整
+        _changeMusicTempo(newBPM);
+        targetBPM = newBPM;
+        lastAdjustedBPM = newBPM;
+
+        // 安定性リセット
+        stableWalkingStartTime = null;
+        isWalkingStable = false;
+        phaseStabilitySeconds = 0;
+
+        print('テンポ調整: ${targetBPM.toStringAsFixed(1)} BPM');
+      }
+    }
+
+    // 安定性の判断
+    _checkWalkingStability(currentBPM);
+
+    // 30秒間安定していれば次のフェーズへ
+    if (isWalkingStable && stableWalkingStartTime != null) {
+      int stableSeconds =
+          DateTime.now().difference(stableWalkingStartTime!).inSeconds;
+
+      if (stableSeconds >= requiredStableSeconds) {
+        setState(() {
+          currentFeedbackPhase = FeedbackPhase.incremental;
+          targetBPM = _roundToNearest5(targetBPM + 5.0); // 5 BPM上げる
+          stableWalkingStartTime = null;
+          isWalkingStable = false;
+          phaseStabilitySeconds = 0;
+        });
+
+        // 新しいテンポに調整
+        _changeMusicTempo(targetBPM);
+
+        print('漸増フェーズへ移行: 新目標BPM = ${targetBPM.toStringAsFixed(1)}');
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('漸増フェーズに移行します: ${targetBPM.toStringAsFixed(1)} BPM'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } else {
+        // 残り時間を更新
+        setState(() {
+          phaseStabilitySeconds = stableSeconds;
+        });
+      }
+    }
+  }
+
+  // 漸増フェーズの処理
+  void _handleIncrementalPhase(double currentBPM) {
+    // 目標BPMとの差を計算
+    double diffBPM = currentBPM - targetBPM;
+
+    // ユーザーが追いつけなくなった場合（目標より10BPM以上低い状態が続く）
+    if (diffBPM <= -10.0 && recentBPMs.length >= 5) {
+      // 5秒間の平均で判断
+      double avgRecentBPM =
+          recentBPMs.sublist(recentBPMs.length - 5).reduce((a, b) => a + b) / 5;
+      double avgDiff = avgRecentBPM - targetBPM;
+
+      if (avgDiff <= -10.0) {
+        // テンポを5 BPM下げる
+        setState(() {
+          targetBPM = _roundToNearest5(targetBPM - 5.0);
+          stableWalkingStartTime = null;
+          isWalkingStable = false;
+          phaseStabilitySeconds = 0;
+        });
+
+        // 新しいテンポに調整
+        _changeMusicTempo(targetBPM);
+
+        print('テンポを下げました: ${targetBPM.toStringAsFixed(1)} BPM');
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('テンポを下げました: ${targetBPM.toStringAsFixed(1)} BPM'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+
+    // 安定性の判断
+    _checkWalkingStability(currentBPM);
+
+    // 30秒間安定していれば次の目標へ
+    if (isWalkingStable && stableWalkingStartTime != null) {
+      int stableSeconds =
+          DateTime.now().difference(stableWalkingStartTime!).inSeconds;
+
+      if (stableSeconds >= requiredStableSeconds) {
+        setState(() {
+          // 目標BPMを5上げる
+          targetBPM = _roundToNearest5(targetBPM + 5.0);
+          stableWalkingStartTime = null;
+          isWalkingStable = false;
+          phaseStabilitySeconds = 0;
+        });
+
+        // 新しいテンポに調整
+        _changeMusicTempo(targetBPM);
+
+        print('目標BPMを上げました: ${targetBPM.toStringAsFixed(1)} BPM');
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('テンポを上げました: ${targetBPM.toStringAsFixed(1)} BPM'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      } else {
+        // 残り時間を更新
+        setState(() {
+          phaseStabilitySeconds = stableSeconds;
+        });
+      }
+    }
+  }
+
+  // 適応フェーズの処理
+  void _handleAdaptivePhase(double currentBPM) {
+    // 実装は漸増フェーズと同様だが、ユーザーの疲労をより考慮
+    // 目標BPMとの差を計算
+    double diffBPM = currentBPM - targetBPM;
+
+    // ユーザーが疲れて速度が落ちた場合
+    if (diffBPM <= -10.0 && recentBPMs.length >= 5) {
+      // 5秒間の平均で判断
+      double avgRecentBPM =
+          recentBPMs.sublist(recentBPMs.length - 5).reduce((a, b) => a + b) / 5;
+      double avgDiff = avgRecentBPM - targetBPM;
+
+      if (avgDiff <= -10.0) {
+        // テンポを5 BPM下げる
+        setState(() {
+          targetBPM = _roundToNearest5(targetBPM - 5.0);
+          stableWalkingStartTime = null;
+          isWalkingStable = false;
+          phaseStabilitySeconds = 0;
+        });
+
+        // 新しいテンポに調整
+        _changeMusicTempo(targetBPM);
+
+        print('適応: テンポを下げました: ${targetBPM.toStringAsFixed(1)} BPM');
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('テンポを下げました: ${targetBPM.toStringAsFixed(1)} BPM'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+
+    // 安定性の判断
+    _checkWalkingStability(currentBPM);
+  }
+
+  // 歩行の安定性をチェック
+  void _checkWalkingStability(double currentBPM) {
+    if (recentBPMs.length < 5) return; // 最低5秒のデータが必要
+
+    // 直近5秒間のデータで標準偏差を計算
+    List<double> lastFiveSeconds = recentBPMs.sublist(recentBPMs.length - 5);
+    double mean =
+        lastFiveSeconds.reduce((a, b) => a + b) / lastFiveSeconds.length;
+
+    double sumSquaredDiff = 0;
+    for (var bpm in lastFiveSeconds) {
+      double diff = bpm - mean;
+      sumSquaredDiff += diff * diff;
+    }
+    double stdDev = math.sqrt(sumSquaredDiff / lastFiveSeconds.length);
+
+    // 目標BPMとの差と標準偏差で安定性を判断
+    double targetDiff = (mean - targetBPM).abs();
+
+    // 安定しているかの判断
+    bool isStableNow = stdDev < stableThreshold && targetDiff < stableThreshold;
+
+    // 安定状態の変化を検出
+    if (isStableNow && !isWalkingStable) {
+      // 安定開始
+      stableWalkingStartTime = DateTime.now();
+      isWalkingStable = true;
+      print(
+          '歩行が安定しました: 平均=${mean.toStringAsFixed(1)}, 標準偏差=${stdDev.toStringAsFixed(1)}');
+    } else if (!isStableNow && isWalkingStable) {
+      // 安定状態が途切れた
+      stableWalkingStartTime = null;
+      isWalkingStable = false;
+      phaseStabilitySeconds = 0;
+      print(
+          '歩行が不安定になりました: 平均=${mean.toStringAsFixed(1)}, 標準偏差=${stdDev.toStringAsFixed(1)}');
+    }
+  }
+
+  // フィードバック実験を終了
+  void _stopFeedbackExperiment() {
+    feedbackTimer?.cancel();
+
+    if (isPlaying) {
+      _togglePlayback();
+    }
+
+    setState(() {
+      isFeedbackExperimentMode = false;
+      currentFeedbackPhase = FeedbackPhase.initial;
+      stableWalkingStartTime = null;
+      isWalkingStable = false;
+      phaseStabilitySeconds = 0;
+    });
+
+    print('フィードバック実験を終了しました');
+  }
+
+  // フィードバック実験モードのUIを構築
+  Widget _buildFeedbackExperimentModeUI() {
+    String phaseTitle;
+    Color phaseColor;
+    IconData phaseIcon;
+    String phaseDescription;
+
+    // 現在のフェーズに基づいて表示内容を設定
+    switch (currentFeedbackPhase) {
+      case FeedbackPhase.freeWalking:
+        phaseTitle = "自由歩行フェーズ";
+        phaseColor = Colors.blue;
+        phaseIcon = Icons.directions_walk;
+        phaseDescription = "自然な速度で歩いてください。歩行ピッチを測定しています...";
+        break;
+      case FeedbackPhase.constantTempo:
+        phaseTitle = "一定テンポフェーズ";
+        phaseColor = Colors.green;
+        phaseIcon = Icons.music_note;
+        phaseDescription = "音楽に合わせて歩いてください。このテンポが続けられるか確認しています...";
+        break;
+      case FeedbackPhase.incremental:
+        phaseTitle = "漸増フェーズ";
+        phaseColor = Colors.orange;
+        phaseIcon = Icons.trending_up;
+        phaseDescription = "テンポが徐々に上がります。音楽に合わせて歩いてください。";
+        break;
+      case FeedbackPhase.adaptive:
+        phaseTitle = "適応フェーズ";
+        phaseColor = Colors.purple;
+        phaseIcon = Icons.auto_awesome;
+        phaseDescription = "疲れを感じたら自然に歩く速度を落としてください。音楽が適応します。";
+        break;
+      default:
+        phaseTitle = "実験準備中";
+        phaseColor = Colors.grey;
+        phaseIcon = Icons.hourglass_empty;
+        phaseDescription = "設定を行い、実験を開始してください。";
+        break;
+    }
+
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // フェーズ情報カード
+            Card(
+              elevation: 4,
+              color: phaseColor.withOpacity(0.1),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(phaseIcon, color: phaseColor, size: 28),
+                        const SizedBox(width: 12),
+                        Text(
+                          phaseTitle,
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: phaseColor,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.settings),
+                          onPressed: _showFeedbackExperimentSettings,
+                          tooltip: '実験設定',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      phaseDescription,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey.shade800,
+                      ),
+                    ),
+                    if (currentFeedbackPhase != FeedbackPhase.initial &&
+                        currentFeedbackPhase != FeedbackPhase.freeWalking) ...[
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('目標テンポ:',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold)),
+                              Text(
+                                '${targetBPM.toStringAsFixed(1)} BPM',
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.indigo,
+                                ),
+                              ),
+                            ],
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              const Text('現在の歩行ピッチ:',
+                                  style:
+                                      TextStyle(fontWeight: FontWeight.bold)),
+                              Text(
+                                '${gaitAnalysisService.currentSpm > 0 ? gaitAnalysisService.currentSpm.toStringAsFixed(1) : "--"} SPM',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: gaitAnalysisService.currentSpm > 0
+                                      ? Colors.teal
+                                      : Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+
+                    // 安定状態表示（適切なフェーズの場合のみ）
+                    if ((currentFeedbackPhase == FeedbackPhase.constantTempo ||
+                            currentFeedbackPhase ==
+                                FeedbackPhase.incremental) &&
+                        isWalkingStable &&
+                        phaseStabilitySeconds > 0) ...[
+                      const SizedBox(height: 16),
+                      LinearProgressIndicator(
+                        value: phaseStabilitySeconds / requiredStableSeconds,
+                        backgroundColor: Colors.grey.shade300,
+                        color: phaseColor,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '安定歩行: $phaseStabilitySeconds / $requiredStableSeconds 秒',
+                        style: TextStyle(
+                          color: phaseColor,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // 現在の歩行データカード
+            Card(
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.analytics, color: Colors.blue),
+                        SizedBox(width: 8),
+                        Text(
+                          '歩行データ',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _buildInfoRow(
+                      'SPM (歩行ピッチ):',
+                      gaitAnalysisService.currentSpm > 0.1
+                          ? gaitAnalysisService.currentSpm.toStringAsFixed(1)
+                          : '--',
+                    ),
+                    _buildInfoRow(
+                      '信頼度スコア:',
+                      '${(gaitAnalysisService.reliability * 100).toStringAsFixed(1)}%',
+                    ),
+                    _buildInfoRow(
+                      '歩数:',
+                      gaitAnalysisService.stepCount.toString(),
+                    ),
+                    if (currentFeedbackPhase == FeedbackPhase.freeWalking) ...[
+                      _buildInfoRow(
+                        '測定時間:',
+                        '${walkingBPMHistory.length} 秒 / 30 秒',
+                      ),
+                    ],
+                    if (userBaselineBPM > 0) ...[
+                      _buildInfoRow(
+                        '基準ピッチ:',
+                        '${userBaselineBPM.toStringAsFixed(1)} BPM',
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // SPM推移グラフ（データが2点以上あれば表示）
+            if (bpmSpots.length > 1)
+              Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.timeline, color: Colors.purple),
+                          SizedBox(width: 8),
+                          Text(
+                            'SPM推移グラフ',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 200,
+                        child: LineChart(
+                          LineChartData(
+                            gridData: FlGridData(show: true),
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (value, meta) =>
+                                      Text(value.toInt().toString()),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 30,
+                                  interval: 5000, // 5秒ごと
+                                  getTitlesWidget: (value, meta) {
+                                    final dt =
+                                        DateTime.fromMillisecondsSinceEpoch(
+                                            value.toInt());
+                                    return Text(
+                                        DateFormat('HH:mm:ss').format(dt));
+                                  },
+                                ),
+                              ),
+                              topTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            borderData: FlBorderData(show: true),
+                            minX: bpmSpots.first.x,
+                            maxX: bpmSpots.last.x,
+                            minY: minY,
+                            maxY: maxY,
+                            lineBarsData: [
+                              // 歩行ピッチデータ
+                              LineChartBarData(
+                                spots: bpmSpots,
+                                isCurved: false,
+                                color: Colors.blue,
+                                barWidth: 2,
+                                dotData: FlDotData(show: false),
+                              ),
+                              // 目標BPMを水平線で表示（適切なフェーズの場合のみ）
+                              if (currentFeedbackPhase !=
+                                      FeedbackPhase.freeWalking &&
+                                  currentFeedbackPhase !=
+                                      FeedbackPhase.initial &&
+                                  targetBPM > 0)
+                                LineChartBarData(
+                                  spots: [
+                                    FlSpot(bpmSpots.first.x, targetBPM),
+                                    FlSpot(bpmSpots.last.x, targetBPM),
+                                  ],
+                                  isCurved: false,
+                                  color: Colors.red.withOpacity(0.7),
+                                  barWidth: 1,
+                                  dotData: FlDotData(show: false),
+                                  dashArray: [5, 5], // 点線
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 16),
+
+            // 実験コントロールボタン
+            Center(
+              child: ElevatedButton.icon(
+                icon: Icon(
+                    isFeedbackExperimentMode ? Icons.stop : Icons.play_arrow),
+                label: Text(isFeedbackExperimentMode ? "実験を終了" : "実験を開始"),
+                onPressed: isFeedbackExperimentMode
+                    ? _stopFeedbackExperiment
+                    : _startFeedbackExperiment,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor:
+                      isFeedbackExperimentMode ? Colors.red : Colors.green,
+                  foregroundColor: Colors.white,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
