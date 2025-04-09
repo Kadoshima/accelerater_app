@@ -11,6 +11,7 @@ import 'dart:math' as math; // Mathクラスを使うためにインポート（
 import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
 import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
 
 // 独自モジュール
 import 'models/sensor_data.dart';
@@ -141,6 +142,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   List<ExperimentRecord> experimentRecords = [];
   bool isRecording = false;
   String experimentFileName = '';
+  String subjectId = ''; // 被験者番号
 
   // グラフデータ
   List<FlSpot> bpmSpots = []; // SPMデータ格納用 (名前はそのまま)
@@ -179,7 +181,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 実験モード関連
   bool isExperimentMode = false;
-  int experimentDurationSeconds = 60;
+  int experimentDurationSeconds = 60; // デフォルト1分
   DateTime? experimentStartTime;
   Timer? experimentTimer;
   int remainingSeconds = 0;
@@ -316,15 +318,141 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
   }
 
-  // 実験を開始する
+  // 実験を開始する（被験者番号入力ダイアログを表示）
+  void _startExperimentWithDialog() async {
+    if (!isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('デバイスに接続してください'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // 被験者番号入力ダイアログを表示
+    String? result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        String tempSubjectId = '';
+        // 現在選択されているテンポをデフォルト値として使用
+        MusicTempo tempTempo =
+            selectedTempo ?? experimentTempoPresets[2]; // デフォルト 80 BPM
+        int tempDuration = experimentDurationSeconds;
+
+        return StatefulBuilder(builder: (context, setState) {
+          return AlertDialog(
+            title: const Text('被験者情報'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    decoration: const InputDecoration(
+                      labelText: '被験者番号',
+                      hintText: '例: S001',
+                    ),
+                    onChanged: (value) {
+                      tempSubjectId = value;
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('テンポ設定（BPM）',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  DropdownButton<MusicTempo>(
+                    value: tempTempo,
+                    isExpanded: true,
+                    items: experimentTempoPresets.map((tempo) {
+                      return DropdownMenuItem<MusicTempo>(
+                        value: tempo,
+                        child: Text(tempo.name),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      setState(() {
+                        tempTempo = value!;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('記録時間',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  Slider(
+                    value: tempDuration / 60,
+                    min: 1,
+                    max: 5,
+                    divisions: 4,
+                    label: '${(tempDuration / 60).round()}分',
+                    onChanged: (value) {
+                      setState(() {
+                        tempDuration = (value * 60).round();
+                      });
+                    },
+                  ),
+                  Text('${(tempDuration / 60).round()}分'),
+                ],
+              ),
+            ),
+            actions: <Widget>[
+              TextButton(
+                child: const Text('キャンセル'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+              ),
+              TextButton(
+                child: const Text('開始'),
+                onPressed: () {
+                  // 入力が空の場合は日時を被験者IDとする
+                  if (tempSubjectId.isEmpty) {
+                    tempSubjectId =
+                        'S${DateFormat('MMddHHmm').format(DateTime.now())}';
+                  }
+                  // 選択されたテンポと時間を記録
+                  selectedTempo = tempTempo;
+                  experimentDurationSeconds = tempDuration;
+                  Navigator.of(context).pop(tempSubjectId);
+                },
+              ),
+            ],
+          );
+        });
+      },
+    );
+
+    // ダイアログでキャンセルされた場合
+    if (result == null) return;
+
+    // 被験者番号を保存
+    subjectId = result;
+
+    // 選択されたテンポに変更
+    if (selectedTempo != null) {
+      await _changeTempo(selectedTempo!);
+    }
+
+    // 実験開始
+    _startExperiment();
+
+    // メトロノーム再生開始
+    if (!isPlaying) {
+      await _metronome.start(bpm: currentMusicBPM);
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
+  // 実験を開始する（内部実装）
   void _startExperiment() {
     // 実験開始時刻を記録
     experimentStartTime = DateTime.now();
     remainingSeconds = experimentDurationSeconds;
 
-    // 実験ファイル名を設定
+    // 実験ファイル名を設定（被験者番号を含める）
     experimentFileName =
-        'gait_data_${selectedTempo?.bpm ?? currentMusicBPM}_target_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
+        'gait_data_${subjectId}_${selectedTempo?.bpm ?? currentMusicBPM}_target_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
 
     // 加速度データを高頻度（100ms間隔）で記録するタイマー
     experimentTimer =
@@ -348,8 +476,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
     });
 
-    // 記録開始メッセージ
-    // print('加速度データの記録を開始しました: $experimentFileName (100msごと)');
+    setState(() {
+      isRecording = true;
+    });
+
+    print(
+        '加速度データの記録を開始しました: $experimentFileName (被験者: $subjectId, ${experimentDurationSeconds}秒間)');
   }
 
   // 実験データを記録 (SPMを記録するように変更)
@@ -418,38 +550,166 @@ class _BLEHomePageState extends State<BLEHomePage> {
     });
   }
 
-  // 実験を終了
-  Future<void> _finishExperiment() async {
+  // 実験を終了する
+  void _finishExperiment() async {
     if (!isRecording) return;
-
-    // 再生を停止
-    if (isPlaying) {
-      await _metronome.stop();
-      setState(() {
-        // isPlaying = false;
-      });
-    }
 
     setState(() {
       isRecording = false;
+      remainingSeconds = 0;
     });
 
-    // データを保存
-    if (experimentRecords.isNotEmpty) {
+    print(
+        '実験記録を終了しました: $experimentFileName (${experimentRecords.length}件のデータ)');
+
+    // 音声を停止
+    if (isPlaying) {
+      await _metronome.stop();
+      if (mounted) {
+        setState(() {});
+      }
+    }
+
+    // CSVファイルに保存
+    String csvData = await _saveExperimentDataToCSV();
+
+    // 自動的にAzureにアップロード
+    if (csvData.isNotEmpty) {
       try {
-        await _saveExperimentData();
+        await _uploadDataToAzure(csvData);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('データがAzureに自動アップロードされました'),
+            duration: Duration(seconds: 3),
+          ),
+        );
       } catch (e) {
-        print('データ保存エラー: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('データ保存に失敗しました: $e'),
-              backgroundColor: Colors.red,
-              duration: const Duration(seconds: 5),
-            ),
-          );
+        print('Azureアップロードエラー: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Azureへのアップロードに失敗しました: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // 実験データをCSVに保存し、データを返す
+  Future<String> _saveExperimentDataToCSV() async {
+    if (experimentRecords.isEmpty) {
+      print('保存するデータがありません');
+      return '';
+    }
+
+    try {
+      // CSVヘッダー
+      List<List<dynamic>> csvData = [
+        [
+          'Timestamp',
+          'TargetBPM',
+          'DetectedBPM',
+          'Reliability',
+          'AccX',
+          'AccY',
+          'AccZ',
+          'Magnitude'
+        ]
+      ];
+
+      // データ行を追加
+      for (var record in experimentRecords) {
+        csvData.add(record.toCSV());
+      }
+
+      // CSVに変換
+      String csv = const ListToCsvConverter().convert(csvData);
+
+      // 保存先ディレクトリを取得
+      final directory = await getApplicationDocumentsDirectory();
+      final path = '${directory.path}/$experimentFileName.csv';
+      final file = File(path);
+
+      // ファイルに書き込み
+      await file.writeAsString(csv);
+      print('ファイルに保存しました: $path');
+
+      return csv;
+    } catch (e) {
+      print('CSV保存エラー: $e');
+      rethrow;
+    }
+  }
+
+  // Azureにデータをアップロード
+  Future<void> _uploadDataToAzure(String csvData) async {
+    if (csvData.isEmpty) {
+      print('アップロードするデータがありません');
+      return;
+    }
+
+    try {
+      // Azureクライアントを作成
+      // アップロードをリトライするメソッド
+      bool uploaded = false;
+      int retries = 0;
+      const maxRetries = 3;
+
+      while (!uploaded && retries < maxRetries) {
+        try {
+          // 接続方法1: SAS Tokenを使う
+          if (azureSasToken.isNotEmpty) {
+            final storage = azblob.AzureStorage.parse(
+                'https://$azureStorageAccount.blob.core.windows.net$azureSasToken');
+
+            try {
+              await storage.putBlob('/$containerName/$experimentFileName.csv',
+                  bodyBytes: utf8.encode(csvData), contentType: 'text/csv');
+
+              print('BLOBが正常にアップロードされました！（SAS Token使用）');
+              uploaded = true;
+            } catch (uploadError) {
+              print('SAS Tokenアップロードエラー: $uploadError');
+              retries++;
+            }
+          }
+          // 接続方法2: 接続文字列を使う
+          else if (azureConnectionString.isNotEmpty) {
+            final headers = {
+              'x-ms-blob-type': 'BlockBlob',
+              'Content-Type': 'text/csv',
+            };
+
+            final Uri uri = Uri.parse(
+                'https://$azureStorageAccount.blob.core.windows.net/$containerName/$experimentFileName.csv');
+
+            final response =
+                await http.put(uri, headers: headers, body: csvData);
+
+            if (response.statusCode == 201) {
+              print('BLOBが正常にアップロードされました！（接続文字列使用）');
+              uploaded = true;
+            } else {
+              print(
+                  '接続文字列アップロードエラー: ${response.statusCode} - ${response.reasonPhrase}');
+              retries++;
+            }
+          } else {
+            throw Exception('Azure接続情報が設定されていません');
+          }
+        } catch (e) {
+          print('Azureアップロード試行エラー ($retries): $e');
+          retries++;
+          await Future.delayed(const Duration(seconds: 2)); // リトライ前に待機
         }
       }
+
+      if (!uploaded) {
+        throw Exception('$maxRetries回リトライ後も失敗しました');
+      }
+    } catch (e) {
+      print('Azureアップロードエラー: $e');
+      rethrow;
     }
   }
 
@@ -476,763 +736,29 @@ class _BLEHomePageState extends State<BLEHomePage> {
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')} GMT';
   }
 
-  // Azure Blob Storageにファイルをアップロード（複数の接続方法を試行）
-  Future<void> _uploadToAzure(String filePath, String blobName) async {
-    // --- デバッグ用ハードコード ---
-    const String hardcodedConnectionString =
-        'BlobEndpoint=https://hagiharatest.blob.core.windows.net/;QueueEndpoint=https://hagiharatest.queue.core.windows.net/;FileEndpoint=https://hagiharatest.file.core.windows.net/;TableEndpoint=https://hagiharatest.table.core.windows.net/;SharedAccessSignature=sv=2024-11-04&ss=bfqt&srt=sco&sp=rwdlacupiytfx&se=2025-08-08T13:00:17Z&st=2025-04-07T05:00:17Z&spr=https,http&sig=j7yyunF0c%2FukvQtCwHmgcErI0KyYlco9AhaALYao6xk%3D';
-    String? hardcodedSasToken;
-    final hcSasMatch = RegExp(r'SharedAccessSignature=([^;]+)')
-        .firstMatch(hardcodedConnectionString);
-    if (hcSasMatch != null && hcSasMatch.groupCount >= 1) {
-      hardcodedSasToken = hcSasMatch.group(1);
-    }
-    const String hcAccountName = 'hagiharatest';
-    const String hcContainerName = 'healthcaredata'; // 新しいコンテナ名
-    print('--- ハードコードされた接続情報を使用 --- ');
-    // --- デバッグ用ハードコードここまで ---
-
-    try {
-      // 環境変数の代わりにハードコード値を使用
-      print('--- 使用する接続情報 --- ');
-      print('AZURE_STORAGE_ACCOUNT: $hcAccountName');
-      if (hardcodedConnectionString.isNotEmpty) {
-        final int maxConnLength = hardcodedConnectionString.length > 50
-            ? 50
-            : hardcodedConnectionString.length;
-        print(
-            '接続文字列 (ハードコード): ${hardcodedConnectionString.substring(0, maxConnLength)}...');
-      } else {
-        print('接続文字列 (ハードコード): 空');
-      }
-      if (hardcodedSasToken != null && hardcodedSasToken.isNotEmpty) {
-        final int maxSasLength =
-            hardcodedSasToken.length > 20 ? 20 : hardcodedSasToken.length;
-        print(
-            'SASトークン (ハードコード): ${hardcodedSasToken.substring(0, maxSasLength)}...');
-      } else {
-        print('SASトークン (ハードコード): nullまたは空');
-      }
-      print('コンテナ名: $hcContainerName');
-      print('------------------------');
-
-      File file = File(filePath);
-      if (!await file.exists()) {
-        print('アップロードファイルが見つかりません: $filePath');
-        throw Exception('ファイルが見つかりません: $filePath');
-      }
-
-      print('Azure Blob Storageへアップロード開始: $blobName');
-
-      // ファイルの内容を読み込む
-      final content = await file.readAsBytes();
-      print('ファイル読み込み完了: ${content.length} バイト');
-
-      // React参考コードのように実装
-      try {
-        print('React参考コード方式でのアップロード試行');
-
-        // SASトークンを正しく整形（先頭に?がなければ追加）
-        String sasToken = hardcodedSasToken ?? '';
-        if (!sasToken.startsWith('?') && !sasToken.isEmpty) {
-          sasToken = '?' + sasToken;
-        }
-
-        // Reactコードと同様にURLを構築
-        final blobUrl = 'https://$hcAccountName.blob.core.windows.net$sasToken';
-        print(
-            'Base Blob URL: ${blobUrl.substring(0, blobUrl.length > 100 ? 100 : blobUrl.length)}...');
-
-        // コンテナクライアント部分をHTTPリクエストとして実装
-        final containerUrl = '$blobUrl&comp=list';
-        print(
-            'コンテナURL確認: ${containerUrl.substring(0, containerUrl.length > 100 ? 100 : containerUrl.length)}...');
-
-        // ブロブのアップロードURL
-        final uploadUrl =
-            'https://$hcAccountName.blob.core.windows.net/$hcContainerName/$blobName$sasToken';
-        print(
-            'アップロードURL: ${uploadUrl.substring(0, uploadUrl.length > 100 ? 100 : uploadUrl.length)}...');
-
-        final headers = {
-          'Content-Type': 'text/csv',
-          'x-ms-blob-type': 'BlockBlob',
-          'x-ms-version': '2021-06-08', // Azure Storage REST APIバージョン
-        };
-
-        final response = await http.put(
-          Uri.parse(uploadUrl),
-          headers: headers,
-          body: content,
-        );
-
-        if (response.statusCode >= 200 && response.statusCode < 300) {
-          print('アップロード成功: $hcContainerName/$blobName');
-          print('ステータスコード: ${response.statusCode}');
-          _showUploadSuccess(blobName);
-          return;
-        } else {
-          final errorDetails =
-              'ステータスコード: ${response.statusCode}, レスポンス: ${response.body}';
-          print('アップロード失敗: $errorDetails');
-          throw Exception('HTTP $errorDetails');
-        }
-      } catch (e) {
-        print('React方式でのアップロード失敗: $e');
-
-        // 別方法を試行 - sasTokenを別の形式で使用
-        try {
-          print('別方法: SASトークン形式変更でのアップロード試行');
-
-          // SASトークンを直接使用（SharedAccessSignatureプレフィックスを削除）
-          String sasToken = hardcodedSasToken ?? '';
-          // SAS トークンから "SharedAccessSignature=" プレフィックスを削除
-          if (sasToken.startsWith('SharedAccessSignature=')) {
-            sasToken = sasToken.substring('SharedAccessSignature='.length);
-          }
-
-          if (sasToken.startsWith('sv=') && !sasToken.startsWith('?')) {
-            sasToken = '?' + sasToken;
-          }
-
-          final uploadUrl =
-              'https://$hcAccountName.blob.core.windows.net/$hcContainerName/$blobName$sasToken';
-          print(
-              '新しいアップロードURL: ${uploadUrl.substring(0, uploadUrl.length > 100 ? 100 : uploadUrl.length)}...');
-
-          final headers = {
-            'Content-Type': 'text/csv',
-            'x-ms-blob-type': 'BlockBlob',
-            'x-ms-version': '2021-06-08',
-          };
-
-          final response = await http.put(
-            Uri.parse(uploadUrl),
-            headers: headers,
-            body: content,
-          );
-
-          if (response.statusCode >= 200 && response.statusCode < 300) {
-            print('別方法でのアップロード成功: $hcContainerName/$blobName');
-            print('ステータスコード: ${response.statusCode}');
-            _showUploadSuccess(blobName);
-            return;
-          } else {
-            final errorDetails =
-                'ステータスコード: ${response.statusCode}, レスポンス: ${response.body}';
-            print('別方法でのアップロード失敗: $errorDetails');
-            throw Exception('HTTP $errorDetails');
-          }
-        } catch (altError) {
-          print('別方法でもアップロード失敗: $altError');
-
-          // 最後の手段 - azblob + 接続文字列を試す
-          try {
-            print('最終手段: azblob + 接続文字列を使用してアップロード試行');
-            final storage =
-                azblob.AzureStorage.parse(hardcodedConnectionString);
-
-            final fullBlobPath = '$hcContainerName/$blobName';
-            print('azblob アップロード先: $fullBlobPath');
-
-            await storage.putBlob(
-              fullBlobPath,
-              bodyBytes: content,
-              contentType: 'text/csv',
-            );
-
-            print('azblob方式でのアップロード成功: $fullBlobPath');
-            _showUploadSuccess(blobName);
-            return;
-          } catch (backupError) {
-            print('すべての方法でアップロード失敗: $backupError');
-            throw Exception(
-                'すべてのアップロード方法が失敗しました: 元のエラー: $e, 別方法エラー: $altError, azblob エラー: $backupError');
-          }
-        }
-      }
-    } catch (e) {
-      print('Azure Blob Storageへのアップロード処理失敗: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Azureへのアップロードに失敗しました: $e'),
-            duration: const Duration(seconds: 10),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-      throw e;
-    }
-  }
-
-  // アップロード成功時の通知表示
-  void _showUploadSuccess(String blobName) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Azureへデータをアップロードしました: $blobName'),
-          duration: const Duration(seconds: 3),
+  // 記録ボタンのビルド
+  Widget _buildRecordingButton() {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      child: ElevatedButton.icon(
+        icon: Icon(isRecording ? Icons.stop : Icons.fiber_manual_record),
+        label: Text(isRecording ? '記録終了' : '記録開始'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: isRecording ? Colors.red : Colors.green,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         ),
-      );
-    }
-  }
-
-  // データ保存時にAzureにもアップロードするよう修正
-  Future<void> _saveExperimentData() async {
-    // 実験ファイル名の確認
-    if (experimentFileName.isEmpty) {
-      experimentFileName =
-          'gait_data_${selectedTempo?.bpm ?? currentMusicBPM}_target_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
-    }
-
-    // ローカルにCSVファイルとして保存
-    final directory = await getApplicationDocumentsDirectory();
-    final filePath = '${directory.path}/$experimentFileName.csv';
-
-    // CSVデータの作成
-    List<List<dynamic>> csvData = [
-      [
-        'Timestamp',
-        'Target BPM',
-        'Detected SPM', // ヘッダー変更
-        'Reliability',
-        'AccX',
-        'AccY',
-        'AccZ',
-        'Magnitude'
-      ], // ヘッダー行
-    ];
-    csvData.addAll(experimentRecords.map((e) => e.toCSV()).toList());
-    String csvString = const ListToCsvConverter().convert(csvData);
-
-    // ファイルに書き込み
-    await File(filePath).writeAsString(csvString);
-    print('実験データをローカルに保存しました: $filePath');
-    print(
-        'データ行数: ${experimentRecords.length}, ファイルサイズ: ${(csvString.length / 1024).toStringAsFixed(2)} KB');
-
-    // 保存完了メッセージを表示
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-              '加速度データをローカルに保存しました: $experimentFileName\n${experimentRecords.length}行のデータ'),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
-
-    // Azure Blob Storageへのアップロード
-    if (mounted) {
-      // アップロード中表示
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                strokeWidth: 3,
-              ),
-              SizedBox(width: 16),
-              Text('Azureにデータをアップロード中...'),
-            ],
-          ),
-          duration: Duration(seconds: 10),
-          backgroundColor: Colors.blue,
-        ),
-      );
-    }
-
-    try {
-      // Azureへアップロード - healthcaredataコンテナを使用
-      await _uploadToAzure(filePath, '$experimentFileName.csv');
-
-      // データ保存場所を通知
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('データ保存完了'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('ファイル名: $experimentFileName.csv'),
-                const SizedBox(height: 8),
-                Text('データ数: ${experimentRecords.length}行'),
-                const SizedBox(height: 16),
-                const Text('保存先:'),
-                Text('• ローカル: $filePath', style: const TextStyle(fontSize: 14)),
-                Text('• Azure: healthcaredata/$experimentFileName.csv',
-                    style: const TextStyle(fontSize: 14)),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('OK'),
-              ),
-            ],
-          ),
-        );
-      }
-    } catch (e) {
-      print('Azureアップロードエラー: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Azureへのアップロードに失敗しました: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-    }
-  }
-
-  // CSVファイルのサイズ推定
-  String _estimateFileSize() {
-    // 1行あたりのサイズを概算（バイト単位）
-    const int bytesPerRow = 100; // タイムスタンプ、BPM、加速度値などを含む
-
-    // 合計行数 = 記録間隔（100ms）× 実験時間（秒）× 10
-    int totalRows = (experimentDurationSeconds * 10);
-
-    // 合計サイズ（キロバイト）
-    double totalKB = (totalRows * bytesPerRow) / 1024;
-
-    if (totalKB < 1024) {
-      return '${totalKB.toStringAsFixed(1)} KB';
-    } else {
-      return '${(totalKB / 1024).toStringAsFixed(2)} MB';
-    }
-  }
-
-  // Bluetooth初期化とリスナー設定を行う非同期メソッド
-  Future<void> _initBluetooth() async {
-    if (_isInitialized) return;
-    _isInitialized = true;
-
-    try {
-      // 初期化を少し遅延させる（特にiOSでの安定性向上）
-      await Future.delayed(const Duration(milliseconds: 800));
-
-      // アダプタ状態の監視を設定
-      _streamSubscriptions.add(FlutterBluePlus.adapterState.listen((state) {
-        if (state == BluetoothAdapterState.on) {
-          // Bluetoothが有効になったとき
-          if (!isScanning && !isConnected && !_isDisposing) {
-            // 自動的にスキャンを開始
-            _startScanWithRetry();
-          }
-        } else {
-          // Bluetoothが無効になったとき
-          setState(() {
-            isScanning = false;
-          });
-          if (isConnected) {
-            disconnect();
-          }
-        }
-      }, onError: (error) {
-        print('アダプタ状態エラー: $error');
-      }));
-
-      // 少し遅延させてからスキャン開始
-      await Future.delayed(const Duration(milliseconds: 200));
-      _startScanWithRetry();
-    } catch (e) {
-      print('Bluetooth初期化エラー: $e');
-      _isInitialized = false;
-    }
-  }
-
-  // リトライ機能付きスキャン開始
-  Future<void> _startScanWithRetry() async {
-    if (_isDisposing) return;
-
-    try {
-      await startScan();
-    } catch (e) {
-      print('スキャン失敗、リトライします... $e');
-      // エラー発生時は少し待ってリトライ
-      if (!_isDisposing) {
-        await Future.delayed(const Duration(seconds: 2));
-        startScan();
-      }
-    }
-  }
-
-  /// BLEデバイスをスキャンして、目的のデバイスを見つけたら接続する
-  Future<void> startScan() async {
-    if (_isDisposing || isScanning) return;
-
-    try {
-      setState(() {
-        isScanning = true;
-        _scanResults.clear(); // スキャン開始時にリストをクリア
-      });
-
-      // Bluetoothが有効かどうか確認（非同期処理を正しくawaitする）
-      BluetoothAdapterState adapterState =
-          await FlutterBluePlus.adapterState.first;
-      if (adapterState != BluetoothAdapterState.on) {
-        // Bluetoothがオフの場合はメッセージを表示
-        setState(() {
-          isScanning = false;
-        });
-        if (!mounted || _isDisposing) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Bluetoothを有効にしてください'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-        return;
-      }
-
-      // すでに接続している場合は一度切断しておく
-      if (targetDevice != null) {
-        await targetDevice!.disconnect();
-        targetDevice = null;
-        isConnected = false;
-      }
-
-      // スキャン前に実行中のスキャンをすべて停止
-      bool isCurrentlyScanning = await FlutterBluePlus.isScanning.first;
-      if (isCurrentlyScanning) {
-        await FlutterBluePlus.stopScan();
-        // 少し待機して次のスキャンを開始（特にiOSで重要）
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-
-      // スキャン結果のリスナー
-      StreamSubscription scanResultsSubscription =
-          FlutterBluePlus.scanResults.listen((results) {
-        if (_isDisposing) return;
-
-        setState(() {
-          // すべてのスキャン結果を表示用に保存
-          _scanResults.clear();
-          _scanResults.addAll(results);
-        });
-
-        for (ScanResult r in results) {
-          // デバッグ用にログ出力
-          print('デバイス発見: ${r.device.platformName} (${r.device.remoteId})');
-
-          // ターゲット名と一致するデバイスを発見したら接続へ
-          if (r.device.platformName == targetDeviceName) {
-            // スキャン停止を確実に実行
-            FlutterBluePlus.stopScan().then((_) {
-              if (!_isDisposing && mounted) {
-                connectToDevice(r.device);
-              }
-            }).catchError((e) {
-              print('スキャン停止エラー: $e');
-            });
-            break;
-          }
-        }
-      }, onError: (error) {
-        print('スキャンエラー: $error');
-        if (!_isDisposing && mounted) {
-          setState(() {
-            isScanning = false;
-          });
-        }
-      });
-      _streamSubscriptions.add(scanResultsSubscription);
-
-      // 状態監視
-      StreamSubscription scanningSubscription =
-          FlutterBluePlus.isScanning.listen((scanning) {
-        if (!_isDisposing && mounted && !scanning) {
-          setState(() {
-            isScanning = false;
-          });
-        }
-      }, onError: (error) {
-        print('スキャン状態エラー: $error');
-      });
-      _streamSubscriptions.add(scanningSubscription);
-
-      // スキャン開始
-      await FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 4),
-        androidUsesFineLocation: false,
-      );
-    } catch (e) {
-      print('スキャン開始エラー: $e');
-      if (!_isDisposing && mounted) {
-        setState(() {
-          isScanning = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('スキャンエラー: $e'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    }
-  }
-
-  /// 見つかったデバイスに接続
-  Future<void> connectToDevice(BluetoothDevice device) async {
-    if (_isDisposing) return;
-
-    try {
-      if (!mounted) return;
-      setState(() {
-        isConnecting = true;
-      });
-      targetDevice = device;
-
-      // 接続前に切断を試行（特にiOSでの安定性向上）
-      try {
-        await device.disconnect();
-        // 少し待機してから接続（特にiOSで重要）
-        await Future.delayed(const Duration(milliseconds: 200));
-      } catch (e) {
-        // 初回接続時など切断エラーは無視
-        print('事前切断無視: $e');
-      }
-
-      // 接続要求
-      await device.connect(
-        timeout: const Duration(seconds: 10),
-        autoConnect: false,
-      );
-
-      if (!mounted || _isDisposing) return;
-      setState(() {
-        isConnecting = false;
-        isConnected = true;
-      });
-
-      // 接続後の切断を監視
-      StreamSubscription connectionSubscription =
-          device.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected &&
-            !_isDisposing &&
-            mounted) {
-          setState(() {
-            isConnected = false;
-            targetDevice = null;
-          });
-
-          // 再スキャン
-          Future.delayed(const Duration(seconds: 1), () {
-            if (!_isDisposing && mounted && !isScanning) {
-              startScan();
-            }
-          });
-        }
-      }, onError: (error) {
-        print('接続状態エラー: $error');
-      });
-      _streamSubscriptions.add(connectionSubscription);
-
-      // サービスを探す
-      await _setupSerialCommunication();
-    } catch (e) {
-      print('接続エラー: $e');
-      if (!_isDisposing && mounted) {
-        setState(() {
-          isConnecting = false;
-          isConnected = false;
-          targetDevice = null;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('接続エラー: $e'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    }
-  }
-
-  /// Bluetooth Serial通信のセットアップ (データ処理部分を変更)
-  Future<void> _setupSerialCommunication() async {
-    if (targetDevice == null || _isDisposing) return;
-    try {
-      List<BluetoothService> services = await targetDevice!.discoverServices();
-      for (BluetoothService service in services) {
-        if (service.uuid == serviceUuid) {
-          for (BluetoothCharacteristic c in service.characteristics) {
-            if (c.uuid == charUuid) {
-              await c.setNotifyValue(true);
-              StreamSubscription characteristicSubscription =
-                  c.lastValueStream.listen((value) {
-                if (value.isEmpty || _isDisposing) return;
-                try {
-                  String jsonString = String.fromCharCodes(value);
-                  final jsonData = jsonDecode(jsonString);
-                  final sensorData = M5SensorData.fromJson(jsonData);
-
-                  if (!_isDisposing && mounted) {
-                    _processSensorData(sensorData);
-                  }
-                } catch (e) {
-                  print('データ解析エラー: $e');
+        onPressed: !isConnected
+            ? null
+            : () {
+                if (isRecording) {
+                  _finishExperiment();
+                } else {
+                  _startExperimentWithDialog(); // ダイアログ表示バージョンを使用
                 }
-              }, onError: (error) {
-                print('キャラクタリスティック読み取りエラー: $error');
-              });
-              _streamSubscriptions.add(characteristicSubscription);
-              print('Notify設定完了: ${c.uuid}');
-              return; // キャラクタリスティック見つけたらループ抜ける
-            }
-          }
-        }
-      }
-      print('ターゲットキャラクタリスティックが見つかりません');
-    } catch (e) {
-      print('サービス探索/Notify設定エラー: $e');
-    }
-  }
-
-  /// 新しいセンサーデータを処理するメソッド
-  void _processSensorData(M5SensorData sensorData) {
-    if (!mounted) return; // マウントされていない場合は処理しない
-
-    setState(() {
-      latestData = sensorData;
-
-      // 履歴に追加
-      dataHistory.add(sensorData);
-      if (dataHistory.length > maxHistorySize) {
-        dataHistory.removeAt(0);
-      }
-
-      // 歩行解析サービスにデータを渡す
-      gaitAnalysisService.addSensorData(sensorData);
-
-      // UI表示用の値を更新
-      _displaySpm = gaitAnalysisService.currentSpm;
-      _displayStepCount = gaitAnalysisService.stepCount;
-
-      // グラフ用データの更新 (SPM)
-      if (_displaySpm > 0) {
-        _updateSpmGraphData(_displaySpm);
-      }
-
-      // 実験モードで記録中なら記録 (タイマー内で実施)
-      // if (isRecording && experimentTimer != null) { ... }
-    });
-  }
-
-  /// SPMグラフデータを更新するメソッド
-  void _updateSpmGraphData(double spm) {
-    if (!mounted) return; // 安全チェック
-
-    // タイムスタンプを取得（現在時刻 or 最後に受信したセンサーデータのタイムスタンプ）
-    final time =
-        (latestData?.timestamp ?? DateTime.now().millisecondsSinceEpoch)
-            .toDouble();
-
-    setState(() {
-      // SPMデータをグラフに追加
-      // タイムスタンプをX軸として追加
-      bpmSpots.add(FlSpot(time, spm));
-
-      // グラフ表示ポイント数の制限 (例: 過去5分 = 300秒 * 50Hz = 15000点 だと多すぎるので時間で制限)
-      const int maxGraphDurationMillis = 5 * 60 * 1000; // 5分
-      if (bpmSpots.isNotEmpty &&
-          (time - bpmSpots.first.x) > maxGraphDurationMillis) {
-        // 5分以上前のデータを削除
-        bpmSpots
-            .removeWhere((spot) => (time - spot.x) > maxGraphDurationMillis);
-      }
-
-      // Y軸の範囲を動的に調整 (既存の minY, maxY を利用)
-      // グラフ内のデータに基づいて範囲を決定
-      if (bpmSpots.isNotEmpty) {
-        double currentMinSpotY = bpmSpots.map((s) => s.y).reduce(math.min);
-        double currentMaxSpotY = bpmSpots.map((s) => s.y).reduce(math.max);
-
-        // 範囲に少し余裕を持たせる
-        double padding = 10.0;
-        minY = math.max(40, currentMinSpotY - padding); // 最小値 40
-        maxY = math.min(200, currentMaxSpotY + padding); // 最大値 200
-
-        // 範囲が狭すぎる場合の調整 (最小40の幅を持たせる)
-        if (maxY - minY < 40) {
-          double center = (minY + maxY) / 2;
-          minY = math.max(40, center - 20); // 最小値制限も考慮
-          maxY = math.min(200, center + 20); // 最大値制限も考慮
-        }
-        // さらに狭い場合の最終調整
-        if (maxY - minY < 40) {
-          minY = 40;
-          maxY = 80;
-        }
-        // 範囲の再制約
-        minY = math.max(40, minY);
-        maxY = math.min(200, maxY);
-      } else {
-        // データがない場合はデフォルト範囲
-        minY = 40;
-        maxY = 160;
-      }
-    });
-  }
-
-  /// 切断
-  Future<void> disconnect() async {
-    try {
-      if (targetDevice != null) {
-        await targetDevice!.disconnect();
-        if (!_isDisposing && mounted) {
-          setState(() {
-            targetDevice = null;
-            isConnected = false;
-          });
-        }
-      }
-    } catch (e) {
-      print('切断エラー: $e');
-    }
-  }
-
-  // テスト記録の開始/停止
-  void _toggleRecording() {
-    setState(() {
-      if (isRecording) {
-        // 記録停止
-        if (experimentTimer != null) {
-          experimentTimer!.cancel();
-          experimentTimer = null;
-        }
-        // _finishExperiment(); // 直接呼び出さない、ボタン操作で明示的に呼び出す
-      } else {
-        // 記録開始
-        experimentRecords.clear();
-        bpmSpots.clear();
-        isRecording = true;
-
-        // モニターモードでの記録開始時に実験ファイル名を設定
-        experimentFileName =
-            'monitor_data_${selectedTempo?.bpm ?? currentMusicBPM}_bpm_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
-
-        // モニターモードでも5秒ごとに実験データを記録する簡易タイマーを設定
-        experimentTimer =
-            Timer.periodic(const Duration(milliseconds: 100), (timer) {
-          if (timer.tick % 10 == 0) {
-            // 1秒ごとの処理 (UI更新など)
-            setState(() {});
-          }
-
-          // 最新の加速度データがあれば記録
-          if (latestData != null && isRecording) {
-            _recordExperimentData();
-          }
-        });
-      }
-    });
+              },
+      ),
+    );
   }
 
   @override
@@ -2769,6 +2295,424 @@ class _BLEHomePageState extends State<BLEHomePage> {
   String _formatReliability(double reliability) {
     if (reliability <= 0.01) return 'N/A';
     return '${(reliability * 100).toStringAsFixed(1)}%';
+  }
+
+  // CSVファイルのサイズ推定
+  String _estimateFileSize() {
+    // 1行あたりのサイズを概算（バイト単位）
+    const int bytesPerRow = 100; // タイムスタンプ、BPM、加速度値などを含む
+
+    // 合計行数 = 記録間隔（100ms）× 実験時間（秒）× 10
+    int totalRows = (experimentDurationSeconds * 10);
+
+    // 合計サイズ（キロバイト）
+    double totalKB = (totalRows * bytesPerRow) / 1024;
+
+    if (totalKB < 1024) {
+      return '${totalKB.toStringAsFixed(1)} KB';
+    } else {
+      return '${(totalKB / 1024).toStringAsFixed(2)} MB';
+    }
+  }
+
+  // 記録を開始/停止する
+  void _toggleRecording() {
+    if (isRecording) {
+      // 記録を停止
+      _finishExperiment();
+    } else {
+      // 記録を開始
+      _startExperimentWithDialog();
+    }
+  }
+
+  // Bluetooth初期化とリスナー設定を行う非同期メソッド
+  Future<void> _initBluetooth() async {
+    if (_isInitialized) return;
+    _isInitialized = true;
+
+    try {
+      // 初期化を少し遅延させる（特にiOSでの安定性向上）
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      // アダプタ状態の監視を設定
+      _streamSubscriptions.add(FlutterBluePlus.adapterState.listen((state) {
+        if (state == BluetoothAdapterState.on) {
+          // Bluetoothが有効になったとき
+          if (!isScanning && !isConnected && !_isDisposing) {
+            // 自動的にスキャンを開始
+            _startScanWithRetry();
+          }
+        } else {
+          // Bluetoothが無効になったとき
+          setState(() {
+            isScanning = false;
+          });
+          if (isConnected) {
+            disconnect();
+          }
+        }
+      }, onError: (error) {
+        print('アダプタ状態エラー: $error');
+      }));
+
+      // 少し遅延させてからスキャン開始
+      await Future.delayed(const Duration(milliseconds: 200));
+      _startScanWithRetry();
+    } catch (e) {
+      print('Bluetooth初期化エラー: $e');
+      _isInitialized = false;
+    }
+  }
+
+  // リトライ機能付きスキャン開始
+  Future<void> _startScanWithRetry() async {
+    if (_isDisposing) return;
+
+    try {
+      await startScan();
+    } catch (e) {
+      print('スキャン失敗、リトライします... $e');
+      // エラー発生時は少し待ってリトライ
+      if (!_isDisposing) {
+        await Future.delayed(const Duration(seconds: 2));
+        startScan();
+      }
+    }
+  }
+
+  /// BLEデバイスをスキャンして、目的のデバイスを見つけたら接続する
+  Future<void> startScan() async {
+    if (_isDisposing || isScanning) return;
+
+    try {
+      setState(() {
+        isScanning = true;
+        _scanResults.clear(); // スキャン開始時にリストをクリア
+      });
+
+      // Bluetoothが有効かどうか確認（非同期処理を正しくawaitする）
+      BluetoothAdapterState adapterState =
+          await FlutterBluePlus.adapterState.first;
+      if (adapterState != BluetoothAdapterState.on) {
+        // Bluetoothがオフの場合はメッセージを表示
+        setState(() {
+          isScanning = false;
+        });
+        if (!mounted || _isDisposing) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Bluetoothを有効にしてください'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
+
+      // すでに接続している場合は一度切断しておく
+      if (targetDevice != null) {
+        await targetDevice!.disconnect();
+        targetDevice = null;
+        isConnected = false;
+      }
+
+      // スキャン前に実行中のスキャンをすべて停止
+      bool isCurrentlyScanning = await FlutterBluePlus.isScanning.first;
+      if (isCurrentlyScanning) {
+        await FlutterBluePlus.stopScan();
+        // 少し待機して次のスキャンを開始（特にiOSで重要）
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+
+      // スキャン結果のリスナー
+      StreamSubscription scanResultsSubscription =
+          FlutterBluePlus.scanResults.listen((results) {
+        if (_isDisposing) return;
+
+        setState(() {
+          // すべてのスキャン結果を表示用に保存
+          _scanResults.clear();
+          _scanResults.addAll(results);
+        });
+
+        for (ScanResult r in results) {
+          // デバッグ用にログ出力
+          print('デバイス発見: ${r.device.platformName} (${r.device.remoteId})');
+
+          // ターゲット名と一致するデバイスを発見したら接続へ
+          if (r.device.platformName == targetDeviceName) {
+            // スキャン停止を確実に実行
+            FlutterBluePlus.stopScan().then((_) {
+              if (!_isDisposing && mounted) {
+                connectToDevice(r.device);
+              }
+            }).catchError((e) {
+              print('スキャン停止エラー: $e');
+            });
+            break;
+          }
+        }
+      }, onError: (error) {
+        print('スキャンエラー: $error');
+        if (!_isDisposing && mounted) {
+          setState(() {
+            isScanning = false;
+          });
+        }
+      });
+      _streamSubscriptions.add(scanResultsSubscription);
+
+      // 状態監視
+      StreamSubscription scanningSubscription =
+          FlutterBluePlus.isScanning.listen((scanning) {
+        if (!_isDisposing && mounted && !scanning) {
+          setState(() {
+            isScanning = false;
+          });
+        }
+      }, onError: (error) {
+        print('スキャン状態エラー: $error');
+      });
+      _streamSubscriptions.add(scanningSubscription);
+
+      // スキャン開始
+      await FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 4),
+        androidUsesFineLocation: false,
+      );
+    } catch (e) {
+      print('スキャン開始エラー: $e');
+      if (!_isDisposing && mounted) {
+        setState(() {
+          isScanning = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('スキャンエラー: $e'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  // 見つかったデバイスに接続
+  Future<void> connectToDevice(BluetoothDevice device) async {
+    if (_isDisposing) return;
+
+    try {
+      if (!mounted) return;
+      setState(() {
+        isConnecting = true;
+      });
+      targetDevice = device;
+
+      // 接続前に切断を試行（特にiOSでの安定性向上）
+      try {
+        await device.disconnect();
+        // 少し待機してから接続（特にiOSで重要）
+        await Future.delayed(const Duration(milliseconds: 200));
+      } catch (e) {
+        // 初回接続時など切断エラーは無視
+        print('事前切断無視: $e');
+      }
+
+      // 接続要求
+      await device.connect(
+        timeout: const Duration(seconds: 10),
+        autoConnect: false,
+      );
+
+      if (!mounted || _isDisposing) return;
+      setState(() {
+        isConnecting = false;
+        isConnected = true;
+      });
+
+      // 接続後の切断を監視
+      StreamSubscription connectionSubscription =
+          device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected &&
+            !_isDisposing &&
+            mounted) {
+          setState(() {
+            isConnected = false;
+            targetDevice = null;
+          });
+
+          // 再スキャン
+          Future.delayed(const Duration(seconds: 1), () {
+            if (!_isDisposing && mounted && !isScanning) {
+              startScan();
+            }
+          });
+        }
+      }, onError: (error) {
+        print('接続状態エラー: $error');
+      });
+      _streamSubscriptions.add(connectionSubscription);
+
+      // サービスを探す
+      await _setupSerialCommunication();
+    } catch (e) {
+      print('接続エラー: $e');
+      if (!_isDisposing && mounted) {
+        setState(() {
+          isConnecting = false;
+          isConnected = false;
+          targetDevice = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('接続エラー: $e'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  // Bluetooth Serial通信のセットアップ
+  Future<void> _setupSerialCommunication() async {
+    if (targetDevice == null || _isDisposing) return;
+    try {
+      List<BluetoothService> services = await targetDevice!.discoverServices();
+      for (BluetoothService service in services) {
+        if (service.uuid == serviceUuid) {
+          for (BluetoothCharacteristic c in service.characteristics) {
+            if (c.uuid == charUuid) {
+              await c.setNotifyValue(true);
+              StreamSubscription characteristicSubscription =
+                  c.lastValueStream.listen((value) {
+                if (value.isEmpty || _isDisposing) return;
+                try {
+                  String jsonString = String.fromCharCodes(value);
+                  final jsonData = jsonDecode(jsonString);
+                  final sensorData = M5SensorData.fromJson(jsonData);
+
+                  if (!_isDisposing && mounted) {
+                    _processSensorData(sensorData);
+                  }
+                } catch (e) {
+                  print('データ解析エラー: $e');
+                }
+              }, onError: (error) {
+                print('キャラクタリスティック読み取りエラー: $error');
+              });
+              _streamSubscriptions.add(characteristicSubscription);
+              print('Notify設定完了: ${c.uuid}');
+              return; // キャラクタリスティック見つけたらループ抜ける
+            }
+          }
+        }
+      }
+      print('ターゲットキャラクタリスティックが見つかりません');
+    } catch (e) {
+      print('サービス探索/Notify設定エラー: $e');
+    }
+  }
+
+  // 新しいセンサーデータを処理するメソッド
+  void _processSensorData(M5SensorData sensorData) {
+    if (!mounted) return; // マウントされていない場合は処理しない
+
+    setState(() {
+      latestData = sensorData;
+
+      // 履歴に追加
+      dataHistory.add(sensorData);
+      if (dataHistory.length > maxHistorySize) {
+        dataHistory.removeAt(0);
+      }
+
+      // 歩行解析サービスにデータを渡す
+      gaitAnalysisService.addSensorData(sensorData);
+
+      // UI表示用の値を更新
+      _displaySpm = gaitAnalysisService.currentSpm;
+      _displayStepCount = gaitAnalysisService.stepCount;
+
+      // グラフ用データの更新 (SPM)
+      if (_displaySpm > 0) {
+        _updateSpmGraphData(_displaySpm);
+      }
+
+      // 実験モードで記録中なら記録 (タイマー内で実施)
+      // if (isRecording && experimentTimer != null) { ... }
+    });
+  }
+
+  // SPMグラフデータを更新するメソッド
+  void _updateSpmGraphData(double spm) {
+    if (!mounted) return; // 安全チェック
+
+    // タイムスタンプを取得（現在時刻 or 最後に受信したセンサーデータのタイムスタンプ）
+    final time =
+        (latestData?.timestamp ?? DateTime.now().millisecondsSinceEpoch)
+            .toDouble();
+
+    setState(() {
+      // SPMデータをグラフに追加
+      // タイムスタンプをX軸として追加
+      bpmSpots.add(FlSpot(time, spm));
+
+      // グラフ表示ポイント数の制限 (例: 過去5分 = 300秒 * 50Hz = 15000点 だと多すぎるので時間で制限)
+      const int maxGraphDurationMillis = 5 * 60 * 1000; // 5分
+      if (bpmSpots.isNotEmpty &&
+          (time - bpmSpots.first.x) > maxGraphDurationMillis) {
+        // 5分以上前のデータを削除
+        bpmSpots
+            .removeWhere((spot) => (time - spot.x) > maxGraphDurationMillis);
+      }
+
+      // Y軸の範囲を動的に調整 (既存の minY, maxY を利用)
+      // グラフ内のデータに基づいて範囲を決定
+      if (bpmSpots.isNotEmpty) {
+        double currentMinSpotY = bpmSpots.map((s) => s.y).reduce(math.min);
+        double currentMaxSpotY = bpmSpots.map((s) => s.y).reduce(math.max);
+
+        // 範囲に少し余裕を持たせる
+        double padding = 10.0;
+        minY = math.max(40, currentMinSpotY - padding); // 最小値 40
+        maxY = math.min(200, currentMaxSpotY + padding); // 最大値 200
+
+        // 範囲が狭すぎる場合の調整 (最小40の幅を持たせる)
+        if (maxY - minY < 40) {
+          double center = (minY + maxY) / 2;
+          minY = math.max(40, center - 20); // 最小値制限も考慮
+          maxY = math.min(200, center + 20); // 最大値制限も考慮
+        }
+        // さらに狭い場合の最終調整
+        if (maxY - minY < 40) {
+          minY = 40;
+          maxY = 80;
+        }
+        // 範囲の再制約
+        minY = math.max(40, minY);
+        maxY = math.min(200, maxY);
+      } else {
+        // データがない場合はデフォルト範囲
+        minY = 40;
+        maxY = 160;
+      }
+    });
+  }
+
+  // 切断
+  Future<void> disconnect() async {
+    try {
+      if (targetDevice != null) {
+        await targetDevice!.disconnect();
+        if (!_isDisposing && mounted) {
+          setState(() {
+            targetDevice = null;
+            isConnected = false;
+          });
+        }
+      }
+    } catch (e) {
+      print('切断エラー: $e');
+    }
   }
 }
 

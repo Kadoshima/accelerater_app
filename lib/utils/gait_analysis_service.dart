@@ -37,14 +37,14 @@ class GaitAnalysisService {
 
   /// コンストラクタ
   GaitAnalysisService({
-    this.totalDataSeconds = 15, // 15秒分のデータを保持
-    this.windowSizeSeconds = 7, // 7秒のウィンドウでFFT計算（大きくして安定性向上）
+    this.totalDataSeconds = 25, // 25秒分のデータを保持（ウィンドウサイズに合わせて増加）
+    this.windowSizeSeconds = 15, // 15秒のウィンドウでFFT計算（最大精度優先）
     this.slideIntervalSeconds = 1, // 1秒ごとにスライド
-    this.minFrequency = 0.6, // 最小周波数 0.6Hz (36 SPM)
-    this.maxFrequency = 3.0, // 最大周波数 3.0Hz (180 SPM)
-    this.minSpm = 40.0, // 最小SPM (40 = 非常にゆっくりした歩行)
-    this.maxSpm = 180.0, // 最大SPM (180 = 非常に速い走り)
-    this.smoothingFactor = 0.15, // 平滑化係数（小さくして安定性向上）
+    this.minFrequency = 1.0, // 最小周波数 1.0Hz (60 SPM)
+    this.maxFrequency = 2.67, // 最大周波数 2.67Hz (160 SPM)
+    this.minSpm = 60.0, // 最小SPM (60 = ゆっくりした歩行)
+    this.maxSpm = 160.0, // 最大SPM (160 = 速い歩行)
+    this.smoothingFactor = 0.2, // 平滑化係数（反応性向上のため0.1から0.2に変更）
     this.minReliability = 0.25, // 最小信頼度 (25%)
     this.staticThreshold = 0.03, // 静止判定の閾値 (0.03G)
     this.useSingleAxisOnly = true, // 単一軸のみを使用
@@ -405,7 +405,11 @@ class GaitAnalysisService {
         // SNR計算（信号対ノイズ比）
         double snr = amplitude / (localMean + 0.001); // ゼロ除算防止
 
-        peaks.add(_FrequencyPeak(freq, amplitude, snr));
+        // 閾値の引き上げ - SNRがある程度高いピークのみを追加
+        if (snr > 1.5) {
+          // SNR閾値を1.8から1.5に緩和
+          peaks.add(_FrequencyPeak(freq, amplitude, snr));
+        }
       }
     }
 
@@ -414,76 +418,133 @@ class GaitAnalysisService {
       return 0.0;
     }
 
-    // 振幅でピークをソート（大きい順）
-    peaks.sort((a, b) => b.amplitude.compareTo(a.amplitude));
-
     // 前回の検出周波数を取得（安定性向上のため）
     double? previousFreq =
         _recentFrequencies.isNotEmpty ? _recentFrequencies.last : null;
 
-    // 倍数関係のチェック用の閾値（許容誤差）
-    const double freqRatioTolerance = 0.15; // 15%誤差許容
-
-    // 最大振幅のピークを取得
-    double mainPeakFreq = peaks[0].frequency;
-
-    // 前回の周波数がある場合は一貫性チェック
-    if (previousFreq != null && previousFreq > 0) {
-      // 前回からの変化率を計算
-      double ratio = mainPeakFreq / previousFreq;
-
-      // 高速歩行時の検出問題対策：
-      // 1. 歩行が速い場合（前回のSPMが高い）で、今回の検出が約半分の場合、2倍の値を使用
-      if (previousFreq > 1.5 && // 90SPM以上の速い歩行
-          _abs(ratio - 0.5) < freqRatioTolerance) {
-        // 約半分になった
-
-        // 検出した周波数の2倍の周波数が妥当かチェック
-        double doubledFreq = mainPeakFreq * 2.0;
-
-        // 2倍の周波数が許容範囲内なら、それを採用
-        if (doubledFreq <= maxFrequency) {
-          print(
-              '高速歩行検出: 周波数を補正 ${mainPeakFreq.toStringAsFixed(2)}Hz → ${doubledFreq.toStringAsFixed(2)}Hz');
-          return doubledFreq;
-        }
+    // 前回の周波数の移動平均を計算（より安定した参照点）
+    double recentAvgFreq = 0.0;
+    if (_recentFrequencies.isNotEmpty) {
+      // 直近3回分のデータの平均を使用
+      int samplesToUse = math.min(3, _recentFrequencies.length);
+      double sum = 0.0;
+      for (int i = _recentFrequencies.length - samplesToUse;
+          i < _recentFrequencies.length;
+          i++) {
+        sum += _recentFrequencies[i];
       }
+      recentAvgFreq = sum / samplesToUse;
+    }
 
-      // 2. 逆に、前回が低速で今回が急に2倍になった場合は、誤検出の可能性を考慮
-      if (previousFreq < 1.5 && // 低〜中速の歩行
-          _abs(ratio - 2.0) < freqRatioTolerance) {
-        // 約2倍になった
+    // 倍数関係のチェック用の閾値（許容誤差）
+    const double freqRatioTolerance = 0.12; // 12%誤差許容（少し厳しくした）
 
-        // 他のピークも確認
+    // ピークをSNRでソート（信号品質重視）
+    peaks.sort((a, b) => b.snr.compareTo(a.snr));
+
+    // SNRが最も高いピークを最初に考慮する（振幅よりも信号品質を重視）
+    double bestPeakFreq = peaks[0].frequency;
+
+    // 過去のデータがある場合、一貫性をチェック
+    if (recentAvgFreq > 0) {
+      // 最新の周波数候補と過去の平均との差
+      double freqDiff = _abs(bestPeakFreq - recentAvgFreq);
+      double relDiff = freqDiff / recentAvgFreq;
+
+      // もし最も強いピークが過去の平均から大きく外れていたら
+      if (relDiff > 0.20) {
+        // 周波数一貫性判定の閾値を25%から20%に調整
+        print(
+            '大きな周波数変化を検出: ${recentAvgFreq.toStringAsFixed(2)}Hz → ${bestPeakFreq.toStringAsFixed(2)}Hz (${(relDiff * 100).toStringAsFixed(1)}% 変化)');
+
+        // 他のピークが過去の周波数に近いものがないか探す
         for (var peak in peaks.skip(1)) {
-          // 2番目以降のピークを確認
-          // 前回の周波数に近いピークがあれば、それを優先
-          if (_abs(peak.frequency / previousFreq - 1.0) < freqRatioTolerance) {
+          double peakRelDiff =
+              _abs(peak.frequency - recentAvgFreq) / recentAvgFreq;
+
+          // より一貫性のあるピークが見つかった場合
+          if (peakRelDiff < 0.15 && peak.snr > peaks[0].snr * 0.7) {
             print(
-                '異常な周波数変化を検出: 代替ピークを採用 ${mainPeakFreq.toStringAsFixed(2)}Hz → ${peak.frequency.toStringAsFixed(2)}Hz');
-            return peak.frequency;
+                'より一貫性のあるピークを採用: ${bestPeakFreq.toStringAsFixed(2)}Hz → ${peak.frequency.toStringAsFixed(2)}Hz');
+            bestPeakFreq = peak.frequency;
+            break;
           }
         }
       }
     }
 
-    // 高速検出の追加チェック（前回の結果がない場合でも）
-    // 周波数スペクトルで高調波関係をチェック
-    for (var peak in peaks.skip(1)) {
-      // 2番目以降のピークを確認
-      // メインピークの約2倍の周波数のピークがあり、それが十分に強い場合
-      if (_abs(peak.frequency / mainPeakFreq - 2.0) < freqRatioTolerance &&
-          peak.snr > peaks[0].snr * 0.6) {
-        // 振幅が主ピークの60%以上
+    // 分数調波の検出と修正（特に120 rpmが85 rpmとして誤検出される問題対応）
+    double potentialHighFreq = bestPeakFreq;
 
-        // 2歩で1周期と判断されている可能性が高い場合、高い周波数を採用
-        print(
-            '周波数倍数関係を検出: 高周波を採用 ${mainPeakFreq.toStringAsFixed(2)}Hz → ${peak.frequency.toStringAsFixed(2)}Hz');
-        return peak.frequency;
+    // 分数調波の検出：特に2/3倍周波数（120rpmと~80rpm）
+    for (var peak in peaks) {
+      // メインピークと他のピークの比率計算
+      if (peak.frequency < potentialHighFreq) {
+        double ratio = potentialHighFreq / peak.frequency;
+
+        // 特に注意すべき比率範囲 (1.4-1.5の範囲は2/3分数調波の可能性)
+        if (ratio >= 1.35 && ratio <= 1.55 && peak.snr > peaks[0].snr * 0.6) {
+          print(
+              '分数調波関係を検出: ${potentialHighFreq.toStringAsFixed(2)}Hz / ${peak.frequency.toStringAsFixed(2)}Hz = ${ratio.toStringAsFixed(2)}');
+
+          // 分数調波の場合、より高い周波数を優先する
+          // 実際のステップは低周波よりも高周波に対応することが多い
+          print(
+              '高周波を優先: ${potentialHighFreq.toStringAsFixed(2)}Hz (${(potentialHighFreq * 60).toStringAsFixed(1)} SPM) を採用');
+          return potentialHighFreq;
+        }
       }
     }
 
-    return mainPeakFreq;
+    // 高調波関係のチェックを強化（110rpmが150rpmと誤検出される問題に対応）
+    double mainPeakFreq = bestPeakFreq;
+
+    // 1.25倍から1.5倍の範囲に強いピークがあるかチェック（110rpmの1.36倍が150rpm）
+    for (var peak in peaks) {
+      double ratio = peak.frequency / mainPeakFreq;
+
+      // 比率が約1.3-1.4倍の強いピークがある場合、誤検出の可能性
+      if (ratio > 1.25 && ratio < 1.5 && peak.snr > peaks[0].snr * 0.8) {
+        // このような場合、より低い周波数を採用
+        print(
+            '高調波関係を検出: ${peak.frequency.toStringAsFixed(2)}Hz と ${mainPeakFreq.toStringAsFixed(2)}Hz');
+
+        // より低い周波数を採用
+        if (mainPeakFreq < peak.frequency) {
+          print('低周波を優先: ${mainPeakFreq.toStringAsFixed(2)}Hz を採用');
+          return mainPeakFreq;
+        } else {
+          print('低周波を優先: ${peak.frequency.toStringAsFixed(2)}Hz を採用');
+          return peak.frequency;
+        }
+      }
+    }
+
+    // 歩行速度の急激な加速・減速の検出（RPMレンジチェック）
+    if (recentAvgFreq > 0 && _recentFrequencies.length >= 3) {
+      // 予測範囲の計算（±20%）
+      double expectedFreqMin = recentAvgFreq * 0.8;
+      double expectedFreqMax = recentAvgFreq * 1.2;
+
+      // 選択されたピークが予測範囲から大きく外れている場合
+      if (bestPeakFreq < expectedFreqMin || bestPeakFreq > expectedFreqMax) {
+        print(
+            '検出周波数が予測範囲外: ${bestPeakFreq.toStringAsFixed(2)}Hz (予測範囲: ${expectedFreqMin.toStringAsFixed(2)}-${expectedFreqMax.toStringAsFixed(2)}Hz)');
+
+        // 直前のデータと近い周波数のピークを探す
+        for (var peak in peaks) {
+          if (peak.frequency >= expectedFreqMin &&
+              peak.frequency <= expectedFreqMax &&
+              peak.snr > peaks[0].snr * 0.5) {
+            print('予測範囲内のピークを採用: ${peak.frequency.toStringAsFixed(2)}Hz');
+            bestPeakFreq = peak.frequency;
+            break;
+          }
+        }
+      }
+    }
+
+    return bestPeakFreq;
   }
 
   /// 信頼度の計算
