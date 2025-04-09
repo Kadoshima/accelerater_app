@@ -1,6 +1,7 @@
 import 'dart:collection';
 import 'dart:math' as math;
 import '../models/sensor_data.dart';
+import 'dart:typed_data';
 
 /// 内部データクラス: ステップイベント
 class _StepEvent {
@@ -14,362 +15,388 @@ class _StepEvent {
 }
 
 /// 足首センサーデータから歩行ステップとピッチ(SPM)を検出するサービス
-/// アルゴリズム仕様に基づき、合成加速度 + ローパスフィルタ + 動的閾値 + スライドウィンドウを使用
+/// FFT（高速フーリエ変換）を使用した周波数解析方式
 class GaitAnalysisService {
-  // --- 設定パラメータ ---
-  final double samplingRate; // Hz (例: 50.0)
-  final double lowPassCutoffFreq; // ローパスフィルタカットオフ周波数 (Hz)
-  final double minStepIntervalSec; // 最小ステップ間隔 (秒)
-  final double maxStepIntervalSec; // 最大ステップ間隔 (秒)
-  final double minDynamicThreshold; // 動的閾値の下限 (G)
-  final double thresholdFactor; // 動的閾値計算係数 (例: 0.6 = 前回のピークの60%)
-  final double windowSizeSec; // SPM計算用ウィンドウサイズ (秒)
-  final double slideSizeSec; // ウィンドウスライド幅 (秒)
-  final double minSpm; // SPMの下限
-  final double maxSpm; // SPMの上限
-  final int historyBufferSize; // フィルタ/ピーク検出に必要なバッファサイズ
-  final double minPeakValleyDiff; // ピークと谷の最小差（ノイズ対策）
-  final double minValleyToPeakDiff; // 谷から次のピークまでの最小上昇量
+  // --- FFT解析のパラメータ ---
+  final int totalDataSeconds; // 全体のデータバッファ長（秒）
+  final int windowSizeSeconds; // FFT処理するウィンドウサイズ（秒）
+  final int slideIntervalSeconds; // スライド間隔（秒）
+  final double minFrequency; // 歩行と見なす最小周波数 (Hz)
+  final double maxFrequency; // 歩行と見なす最大周波数 (Hz)
+  final double minSpm; // 最小SPM (40 = 非常にゆっくりした歩行)
+  final double maxSpm; // 最大SPM (180 = 非常に速い走り)
+  final double smoothingFactor; // 結果の平滑化係数 (0.0-1.0)
 
-  // --- 内部状態変数 ---
-  final Queue<M5SensorData> _sensorHistory; // 最近のセンサーデータ履歴
-  final Queue<double> _filteredMagnitudeBuffer; // フィルタリング後の合成加速度バッファ
-  final List<_StepEvent> _stepEvents; // すべてのステップイベント履歴
-  double _previousFilteredMagnitude = 1.0; // ローパスフィルタの内部状態 (初期値 1G)
-  final double _filterAlpha; // ローパスフィルタ係数
-
-  double _lastPeakMagnitude = 1.2; // 最後に検出されたピークの振幅 (初期値: 静止+α)
-  double _dynamicThreshold; // 現在の動的閾値
-  bool _isPotentialPeak = false; // ピーク候補フラグ
-  double _valleyAfterPeak = double.maxFinite; // ピーク後の谷の深さ
-  int _lastStepTimestamp = 0; // 最後のステップのタイムスタンプ
-  double _lastValleyValue = 1.0; // 最後に検出された谷の値
-  int _lastWindowUpdateTime = 0; // 最後にウィンドウ計算した時刻
-
-  // --- 結果 ---
-  int _stepCount = 0;
-  double _currentSpm = 0.0;
+  // --- 内部変数 ---
+  final Queue<M5SensorData> _dataBuffer; // センサーデータバッファ
+  double _currentSpm = 0.0; // 現在の歩行ピッチ
   double _reliability = 0.0; // 検出の信頼度
-
-  // デバッグ用カウンター
-  int _sampleCount = 0;
+  int _stepCount = 0; // 累計ステップ数
+  int _lastProcessingTime = 0; // 最後の処理時間
+  int _samplingRate = 60; // サンプリングレートを60Hzに固定
+  final List<double> _recentFrequencies = []; // 最近検出した周波数
+  final List<double> _fftMagnitudes = []; // デバッグ用FFT振幅値
 
   // --- ゲッター ---
   int get stepCount => _stepCount;
   double get currentSpm => _currentSpm;
-  double get lastPeakMagnitude => _lastPeakMagnitude;
-  double get dynamicThreshold => _dynamicThreshold;
   double get reliability => _reliability;
-
-  /// 直近N個のステップ間隔（ミリ秒）を取得するメソッド
-  List<double> getLatestStepIntervals({int count = 5}) {
-    List<double> intervals = [];
-    if (_stepEvents.length >= 2) {
-      // 使用する間隔の数を計算（最大count個、ただし少なくとも1つのステップイベント間隔が必要）
-      int numIntervals = math.min(count, _stepEvents.length - 1);
-
-      // 最新のステップから順に間隔を計算
-      for (int i = _stepEvents.length - 1;
-          i >= _stepEvents.length - numIntervals;
-          i--) {
-        // 現在のステップと一つ前のステップの間隔を計算
-        double interval =
-            (_stepEvents[i].timestamp - _stepEvents[i - 1].timestamp)
-                .toDouble();
-
-        // 妥当な間隔のみ追加（非常に長い間隔や短すぎる間隔を除外）
-        if (interval >= minStepIntervalSec * 1000 &&
-            interval <= maxStepIntervalSec * 1000) {
-          intervals.insert(0, interval); // 古い順に追加
-        }
-      }
-    }
-    return intervals;
-  }
+  List<double> get fftMagnitudes => List.unmodifiable(_fftMagnitudes); // デバッグ用
 
   /// コンストラクタ
   GaitAnalysisService({
-    this.samplingRate = 50.0,
-    this.lowPassCutoffFreq = 1.5, // 1.5Hzカットオフ（以前は2.5Hz, 5Hz）
-    this.minStepIntervalSec = 0.3, // 300ms (200 SPM)
-    this.maxStepIntervalSec = 1.5, // 1500ms (40 SPM)
-    this.minDynamicThreshold =
-        0.18, // 閾値の下限 0.18G（静止状態の1Gより低い値）- 以前は0.25G, 0.3G, 0.45G
-    this.thresholdFactor = 0.25, // ピークの25%を閾値に - 以前は0.35, 0.4, 0.5
-    this.windowSizeSec = 10.0, // 10秒ウィンドウ - 以前は20秒
-    this.slideSizeSec = 1.0, // 1秒スライド - 以前は2秒
-    this.minSpm = 40.0,
-    this.maxSpm = 200.0,
-    this.historyBufferSize = 5, // フィルタ/ピーク検出に最低5サンプル使用
-    this.minPeakValleyDiff = 0.05, // ピークと谷の差が0.05G以上必要 - 以前は0.08G, 0.1G, 0.15G
-    this.minValleyToPeakDiff =
-        0.03, // 谷から次のピークまでの上昇量が0.03G以上必要 - 以前は0.05G, 0.08G, 0.12G
-  })  : _filterAlpha = _calculateFilterAlpha(samplingRate, lowPassCutoffFreq),
-        _dynamicThreshold = minDynamicThreshold, // 初期閾値は下限値に設定
-        _sensorHistory = Queue<M5SensorData>(),
-        _filteredMagnitudeBuffer = Queue<double>(),
-        _stepEvents = [] {
-    print('GaitAnalysisService初期化(スライドウィンドウ方式): '
-        'フィルタα=${_filterAlpha.toStringAsFixed(3)}, '
-        '閾値=${minDynamicThreshold}G, '
-        'ウィンドウ=${windowSizeSec}秒, '
-        'スライド=${slideSizeSec}秒');
-  }
-
-  /// フィルタ係数アルファを計算
-  static double _calculateFilterAlpha(double samplingRate, double cutoffFreq) {
-    double dt = 1.0 / samplingRate;
-    double rc = 1.0 / (2.0 * math.pi * cutoffFreq);
-    return dt / (rc + dt);
+    this.totalDataSeconds = 15, // 15秒分のデータを保持
+    this.windowSizeSeconds = 3, // 3秒のウィンドウでFFT計算
+    this.slideIntervalSeconds = 1, // 1秒ごとにスライド
+    this.minFrequency = 0.6, // 最小周波数 0.6Hz (36 SPM)
+    this.maxFrequency = 3.0, // 最大周波数 3.0Hz (180 SPM)
+    this.minSpm = 40.0, // 最小SPM (40 = 非常にゆっくりした歩行)
+    this.maxSpm = 180.0, // 最大SPM (180 = 非常に速い走り)
+    this.smoothingFactor = 0.3, // 新しい値の30%を反映
+  }) : _dataBuffer = Queue<M5SensorData>() {
+    print('GaitAnalysisService初期化(FFT方式): '
+        'バッファ=${totalDataSeconds}秒, '
+        'ウィンドウ=${windowSizeSeconds}秒, '
+        'スライド=${slideIntervalSeconds}秒, '
+        'サンプリングレート=60Hz固定, '
+        '周波数範囲=${minFrequency}Hz-${maxFrequency}Hz');
   }
 
   /// 新しいセンサーデータを処理
   void addSensorData(M5SensorData sensorData) {
-    _sampleCount++;
+    // バッファにデータを追加
+    _dataBuffer.add(sensorData);
 
-    // 1. データバッファリング
-    _sensorHistory.add(sensorData);
-    // 必要最低限のサイズを保持
-    while (_sensorHistory.length > historyBufferSize + 5) {
-      // 少し余裕を持たせる
-      _sensorHistory.removeFirst();
+    // サンプリングレートの推定（初期または定期的に）
+    _updateSamplingRate();
+
+    // バッファサイズの制限（推定サンプリングレートに基づいて）
+    int maxBufferSize = totalDataSeconds * _samplingRate;
+    while (_dataBuffer.length > maxBufferSize) {
+      _dataBuffer.removeFirst();
     }
 
-    // 2. 合成加速度を計算し、ローパスフィルタ適用
-    double magnitude = sensorData.magnitude ?? 1.0; // magnitudeがnullなら1Gとする
-    double currentFilteredMagnitude = _applyLowPassFilter(magnitude);
-    _filteredMagnitudeBuffer.add(currentFilteredMagnitude);
-    while (_filteredMagnitudeBuffer.length > historyBufferSize + 5) {
-      _filteredMagnitudeBuffer.removeFirst();
-    }
-
-    // 100サンプルごとにデバッグ情報表示
-    if (_sampleCount % 100 == 0) {
-      print(
-          'GaitAnalysis状態: サンプル数=$_sampleCount, 現在閾値=${_dynamicThreshold.toStringAsFixed(3)}G, '
-          'SPM=$_currentSpm, ステップ数=$_stepCount, ステップ履歴=${_stepEvents.length}件');
-      print('最新データ: 生=$magnitude, フィルタ後=$currentFilteredMagnitude');
-    }
-
-    // 3. ステップ検出を実行 (フィルタ後の値とタイムスタンプを使用)
-    _detectStep(currentFilteredMagnitude, sensorData.timestamp);
-
-    // 4. スライドウィンドウ方式でSPMを計算（slideSizeSec秒ごとに実行）
+    // 処理間隔をチェック（スライド間隔秒ごとに処理）
     int currentTime = sensorData.timestamp;
-    if (_lastWindowUpdateTime == 0 ||
-        (currentTime - _lastWindowUpdateTime) >= (slideSizeSec * 1000)) {
-      _calculateSpmWithWindow(currentTime);
-      _lastWindowUpdateTime = currentTime;
-    }
-
-    // 5. 古いステップイベントを削除（現在時刻からwindowSizeSec*2秒以上前のもの）
-    _cleanupOldStepEvents(sensorData.timestamp);
-  }
-
-  /// 古いステップイベントの削除
-  void _cleanupOldStepEvents(int currentTimestamp) {
-    if (_stepEvents.isEmpty) return;
-
-    // 現在時刻からwindowSizeSec*2秒より古いイベントを削除
-    int threshold = currentTimestamp - (windowSizeSec.toInt() * 2 * 1000);
-    while (_stepEvents.isNotEmpty && _stepEvents.first.timestamp < threshold) {
-      _stepEvents.removeAt(0);
+    if (_lastProcessingTime == 0 ||
+        (currentTime - _lastProcessingTime) >= slideIntervalSeconds * 1000) {
+      // FFT処理を実行
+      _processFFT();
+      _lastProcessingTime = currentTime;
     }
   }
 
-  /// ローパスフィルタを適用 (1次IIR)
-  double _applyLowPassFilter(double newValue) {
-    // 初期値(静止状態の1Gなど)を適切に設定することが重要
-    _previousFilteredMagnitude = _filterAlpha * newValue +
-        (1.0 - _filterAlpha) * _previousFilteredMagnitude;
-    return _previousFilteredMagnitude;
+  /// サンプリングレートの推定（タイムスタンプから計算）
+  void _updateSamplingRate() {
+    // サンプリングレートを60Hzに固定
+    _samplingRate = 60;
+
+    // デバッグ用に実際のサンプリングレートを計算して表示するだけ
+    if (_dataBuffer.length < 10) return; // データが少なすぎる
+
+    // 最初と最後のタイムスタンプから平均サンプリングレートを計算
+    int firstTime = _dataBuffer.first.timestamp;
+    int lastTime = _dataBuffer.last.timestamp;
+    double durationSeconds = (lastTime - firstTime) / 1000.0;
+
+    if (durationSeconds > 0) {
+      int estimatedRate = ((_dataBuffer.length - 1) / durationSeconds).round();
+
+      // 実際のサンプリングレートをログ出力（参考情報として）
+      print(
+          '実際のサンプリングレート: ${estimatedRate}Hz (データ数: ${_dataBuffer.length}, 期間: ${durationSeconds.toStringAsFixed(2)}秒)');
+      print('固定サンプリングレート60Hzを使用中');
+    }
   }
 
-  /// ステップ検出ロジック
-  void _detectStep(double currentFilteredMag, int timestamp) {
-    // 十分なデータがない場合はスキップ
-    if (_filteredMagnitudeBuffer.length < 3) {
+  /// FFT処理メイン
+  void _processFFT() {
+    if (_dataBuffer.length < windowSizeSeconds * _samplingRate) {
+      print(
+          'FFT: データ不足 (${_dataBuffer.length}/${windowSizeSeconds * _samplingRate})');
       return;
     }
-
-    // ピーク検出のための値を取得 (最新から2番目を中心に比較)
-    double prevFilteredMag =
-        _filteredMagnitudeBuffer.elementAt(_filteredMagnitudeBuffer.length - 2);
-    double prevPrevFilteredMag =
-        _filteredMagnitudeBuffer.elementAt(_filteredMagnitudeBuffer.length - 3);
-
-    // 動的閾値を計算 (下限値を保証)
-    // 閾値は、前回のピークの振幅に基づいて決定するが、最低でもminDynamicThresholdは確保する
-    _dynamicThreshold =
-        math.max(minDynamicThreshold, _lastPeakMagnitude * thresholdFactor);
-
-    // --- ピーク候補の検出 ---
-    // 条件: 閾値を超え、かつ上昇から下降に転じた点 (prevがピーク)
-    if (!_isPotentialPeak) {
-      // まだピーク候補がない場合、新しいピークを探す
-      // ピーク検出条件をデバッグ表示
-      if (_sampleCount % 50 == 0) {
-        print('ピーク検出チェック: '
-            'prev=${prevFilteredMag.toStringAsFixed(3)}G, '
-            '閾値=${_dynamicThreshold.toStringAsFixed(3)}G, '
-            'prevPrev=${prevPrevFilteredMag.toStringAsFixed(3)}G, '
-            'current=${currentFilteredMag.toStringAsFixed(3)}G');
-      }
-
-      if (prevFilteredMag > _dynamicThreshold &&
-          prevFilteredMag > prevPrevFilteredMag &&
-          prevFilteredMag > currentFilteredMag) {
-        // 新しいピーク候補を検出
-        _isPotentialPeak = true;
-        // ピーク値を保存（後で使用）
-        _lastPeakMagnitude = prevFilteredMag;
-        _valleyAfterPeak = currentFilteredMag; // ピーク直後の値を谷の初期値とする
-
-        print(
-            'Potential peak detected: ${_lastPeakMagnitude.toStringAsFixed(3)} > '
-            'Thr: ${_dynamicThreshold.toStringAsFixed(3)} @ $timestamp');
-      }
-    } else {
-      // すでにピーク候補がある場合、谷を探す
-      if (currentFilteredMag < prevFilteredMag) {
-        // まだ下降中、谷の値を更新
-        _valleyAfterPeak = math.min(_valleyAfterPeak, currentFilteredMag);
-      } else if (currentFilteredMag > prevFilteredMag) {
-        // 上昇に転じた、谷が確定した
-        // ピークと谷の差が十分かチェック
-        double peakValleyDiff = _lastPeakMagnitude - _valleyAfterPeak;
-        double valleyToPeakDiff = currentFilteredMag - _valleyAfterPeak;
-
-        print('Step check: Peak=${_lastPeakMagnitude.toStringAsFixed(3)}, '
-            'Valley=${_valleyAfterPeak.toStringAsFixed(3)}, '
-            'Diff=${peakValleyDiff.toStringAsFixed(3)}, '
-            'ValleyToCurrent=${valleyToPeakDiff.toStringAsFixed(3)}');
-
-        // 振幅チェック - 条件を緩和
-        if (peakValleyDiff < minPeakValleyDiff ||
-            valleyToPeakDiff < minValleyToPeakDiff) {
-          print(
-              'Step rejected (small amplitude: peak-valley=${peakValleyDiff.toStringAsFixed(3)}, '
-              'valley-current=${valleyToPeakDiff.toStringAsFixed(3)})');
-          _isPotentialPeak = false; // フラグリセット
-          _valleyAfterPeak = double.maxFinite;
-          return; // ステップとしない
-        }
-
-        // ステップ間隔をチェック
-        double intervalSeconds = (_lastStepTimestamp > 0)
-            ? (timestamp - _lastStepTimestamp) / 1000.0
-            : double.maxFinite; // 最初のステップは間隔無限大
-
-        // 最小間隔チェック
-        if (intervalSeconds >= minStepIntervalSec) {
-          // 長すぎる間隔の場合、新しい歩行シーケンスとして扱う（ログ表示のみ）
-          if (intervalSeconds > maxStepIntervalSec) {
-            print(
-                'New sequence likely started (interval: ${intervalSeconds.toStringAsFixed(2)}s > '
-                '${maxStepIntervalSec}s)');
-          }
-
-          // ステップ確定！
-          _stepCount++;
-          _lastStepTimestamp = timestamp;
-          _lastValleyValue = _valleyAfterPeak; // 最後の谷の値を保存
-
-          // 信頼度計算 (ピークと谷の差が大きいほど信頼度が高い)
-          _reliability = math.min(1.0, peakValleyDiff / 1.0);
-
-          // ステップイベントをリストに追加
-          _stepEvents.add(_StepEvent(
-              timestamp, _lastPeakMagnitude, _valleyAfterPeak, _reliability));
-
-          print(
-              'Step confirmed! Count: $_stepCount, Interval: ${intervalSeconds.toStringAsFixed(2)}s, '
-              'Peak: ${_lastPeakMagnitude.toStringAsFixed(3)}, Valley: ${_valleyAfterPeak.toStringAsFixed(3)}, '
-              'Reliability: ${(_reliability * 100).toStringAsFixed(1)}%');
-
-          // SPMをすぐに更新
-          _calculateSpmWithWindow(timestamp);
-        } else {
-          print(
-              'Step rejected (too short interval: ${intervalSeconds.toStringAsFixed(2)}s < '
-              '${minStepIntervalSec}s)');
-        }
-
-        // ステップ判定処理が終わったらフラグと谷をリセット
-        _isPotentialPeak = false;
-        _valleyAfterPeak = double.maxFinite;
-      }
-    }
-  }
-
-  /// スライドウィンドウ方式での歩行ピッチ(SPM)計算
-  void _calculateSpmWithWindow(int currentTimestamp) {
-    // ウィンドウサイズ内のステップイベント数をカウント
-    int windowStartTime = currentTimestamp - (windowSizeSec * 1000).toInt();
-
-    // 現在のウィンドウ内のステップイベントを抽出
-    List<_StepEvent> windowEvents = _stepEvents
-        .where((event) => event.timestamp >= windowStartTime)
-        .toList();
-
-    if (windowEvents.isEmpty) {
-      // ウィンドウ内にステップがない場合はSPMをゼロに
-      _currentSpm = 0.0;
-      _reliability = 0.0;
-      print('Window empty - SPM set to 0');
-      return;
-    }
-
-    // 直接ウィンドウ内のステップ数をカウントし、SPMを計算
-    int stepCount = windowEvents.length;
-    double windowSizeMinutes = windowSizeSec / 60.0;
-
-    // SPMを計算： ステップ数 ÷ ウィンドウサイズ（分）
-    _currentSpm = (stepCount / windowSizeMinutes).clamp(minSpm, maxSpm);
-
-    // 信頼度は最新のステップの信頼度を使用
-    _reliability = windowEvents.last.reliability;
 
     print(
-        'SPM updated: ${_currentSpm.toStringAsFixed(1)} (window size: ${windowSizeSec}s, '
-        'steps in window: $stepCount, effective SPM: ${(stepCount / windowSizeMinutes).toStringAsFixed(1)})');
+        'FFT処理実行: サンプリングレート=${_samplingRate}Hz, バッファサイズ=${_dataBuffer.length}');
+
+    // 最新のウィンドウサイズ分のデータを抽出
+    int windowSamples = windowSizeSeconds * _samplingRate;
+    List<double> windowData = [];
+
+    // バッファの後ろからwindowSamples分のデータを取得
+    List<M5SensorData> recentData =
+        _dataBuffer.toList().sublist(_dataBuffer.length - windowSamples);
+
+    // マグニチュード値を取得
+    for (var data in recentData) {
+      windowData.add(data.magnitude ?? 0.0);
+    }
+
+    // 前処理（トレンド除去とハミング窓適用）
+    List<double> processedData = _preprocessData(windowData);
+
+    // FFT実行
+    List<_Complex> fftResult = _computeFFT(processedData);
+
+    // FFT結果から周波数スペクトル計算
+    List<double> magnitudes = _computeMagnitudes(fftResult);
+    _fftMagnitudes.clear();
+    _fftMagnitudes.addAll(magnitudes);
+
+    // 周波数ピーク検出
+    double peakFrequency = _findPeakFrequency(magnitudes);
+
+    // 周波数からSPMへの変換
+    if (peakFrequency > 0) {
+      // 周波数をSPMに変換 (Hz * 60 = SPM)
+      double newSpm = peakFrequency * 60.0;
+
+      // SPMを現実的な範囲に制限
+      if (newSpm < minSpm) {
+        print('FFT: 下限値を適用: $newSpm → $minSpm');
+        newSpm = minSpm;
+      } else if (newSpm > maxSpm) {
+        print('FFT: 上限値を適用: $newSpm → $maxSpm');
+        newSpm = maxSpm;
+      }
+
+      _recentFrequencies.add(peakFrequency);
+      // 最大10個の周波数を保持
+      if (_recentFrequencies.length > 10) {
+        _recentFrequencies.removeAt(0);
+      }
+
+      // SPM更新（平滑化）
+      double previousSpm = _currentSpm;
+      if (_currentSpm <= 0) {
+        _currentSpm = newSpm; // 初回は平滑化なし
+      } else {
+        _currentSpm =
+            (1 - smoothingFactor) * _currentSpm + smoothingFactor * newSpm;
+      }
+
+      // 信頼度の計算（最大値と全体の比率から）
+      _reliability = _calculateReliability(magnitudes, peakFrequency);
+
+      // ステップ数の更新（周波数 * 経過時間）
+      double elapsedTimeSinceLastProcess = slideIntervalSeconds.toDouble();
+      int newSteps = (peakFrequency * elapsedTimeSinceLastProcess).round();
+      _stepCount += newSteps;
+
+      print('FFT: SPM更新 $previousSpm → ${_currentSpm.toStringAsFixed(1)} '
+          '(周波数=${peakFrequency.toStringAsFixed(2)}Hz, '
+          '信頼度=${(_reliability * 100).toStringAsFixed(1)}%, '
+          'ステップ+$newSteps)');
+    } else {
+      // ピークが見つからない場合
+      print('FFT: 有効な周波数ピークなし');
+
+      // 静止状態と判断し、SPMをゼロにリセット
+      if (_currentSpm > 0) {
+        print('FFT: 静止状態検出 - SPMリセット');
+        _currentSpm = 0.0;
+        _reliability = 0.0;
+      }
+    }
   }
 
-  /// 長時間ステップがない場合にSPMをリセットするヘルパー関数
-  void _resetSpmIfInactive() {
-    if (_lastStepTimestamp > 0) {
-      double timeSinceLastStepSec =
-          (DateTime.now().millisecondsSinceEpoch - _lastStepTimestamp) / 1000.0;
-      // 最大ステップ間隔の1.5倍の時間、ステップがなければ停止とみなす
-      if (timeSinceLastStepSec > maxStepIntervalSec * 1.5) {
-        if (_currentSpm != 0.0) {
-          print(
-              'Resetting SPM to 0 due to inactivity ($timeSinceLastStepSec sec)');
-          _currentSpm = 0.0;
-        }
-      }
-    } else if (_stepEvents.isEmpty && _currentSpm != 0.0) {
-      // ステップイベントがまだないのにSPMが0でない場合はリセット
-      _currentSpm = 0.0;
+  /// データの前処理（トレンド除去とハミング窓適用）
+  List<double> _preprocessData(List<double> data) {
+    // トレンド除去（平均値を引く）
+    double mean = data.reduce((a, b) => a + b) / data.length;
+    List<double> detrended = data.map((x) => x - mean).toList();
+
+    // ハミング窓の適用（エッジ効果を減らすため）
+    List<double> windowed = List<double>.filled(detrended.length, 0.0);
+    for (int i = 0; i < detrended.length; i++) {
+      // ハミング窓の計算: 0.54 - 0.46 * cos(2πi/(N-1))
+      double window =
+          0.54 - 0.46 * math.cos(2 * math.pi * i / (detrended.length - 1));
+      windowed[i] = detrended[i] * window;
     }
+
+    return windowed;
+  }
+
+  /// FFT計算（複素数FFT）
+  List<_Complex> _computeFFT(List<double> data) {
+    // 入力データサイズを2のべき乗に調整
+    int n = 1;
+    while (n < data.length) {
+      n *= 2;
+    }
+
+    // ゼロパディング
+    List<_Complex> complexData = List<_Complex>.filled(n, _Complex(0, 0));
+    for (int i = 0; i < data.length; i++) {
+      complexData[i] = _Complex(data[i], 0);
+    }
+
+    // FFT実行
+    return _fft(complexData);
+  }
+
+  /// 再帰的FFTアルゴリズム
+  List<_Complex> _fft(List<_Complex> x) {
+    int n = x.length;
+
+    // 基底ケース
+    if (n == 1) return [x[0]];
+
+    // 奇数・偶数インデックスに分割
+    List<_Complex> even = List<_Complex>.filled(n ~/ 2, _Complex(0, 0));
+    List<_Complex> odd = List<_Complex>.filled(n ~/ 2, _Complex(0, 0));
+
+    for (int i = 0; i < n ~/ 2; i++) {
+      even[i] = x[i * 2];
+      odd[i] = x[i * 2 + 1];
+    }
+
+    // 再帰的に変換
+    List<_Complex> evenResult = _fft(even);
+    List<_Complex> oddResult = _fft(odd);
+
+    // 結合
+    List<_Complex> result = List<_Complex>.filled(n, _Complex(0, 0));
+    for (int k = 0; k < n ~/ 2; k++) {
+      double angle = -2 * math.pi * k / n;
+      _Complex factor = _Complex(math.cos(angle), math.sin(angle));
+
+      _Complex t = oddResult[k] * factor;
+      result[k] = evenResult[k] + t;
+      result[k + n ~/ 2] = evenResult[k] - t;
+    }
+
+    return result;
+  }
+
+  /// FFT結果から振幅計算
+  List<double> _computeMagnitudes(List<_Complex> fftResult) {
+    int n = fftResult.length;
+    // ナイキスト周波数までの半分のみ使用
+    int usefulBins = n ~/ 2;
+
+    List<double> magnitudes = List<double>.filled(usefulBins, 0.0);
+    for (int i = 0; i < usefulBins; i++) {
+      // 振幅の計算（複素数の絶対値）
+      magnitudes[i] = fftResult[i].magnitude;
+    }
+
+    return magnitudes;
+  }
+
+  /// 周波数ピークの検出
+  double _findPeakFrequency(List<double> magnitudes) {
+    int n = magnitudes.length;
+    int peakIndex = -1;
+    double peakValue = 0.0;
+
+    // 歩行周波数範囲内のピークを探す
+    int minBin = (minFrequency * windowSizeSeconds).round();
+    int maxBin = (maxFrequency * windowSizeSeconds).round();
+
+    // 範囲の調整
+    minBin = math.max(1, minBin); // 0より大きい（DCは除外）
+    maxBin = math.min(n - 1, maxBin); // 配列範囲内
+
+    // ピーク候補の検出
+    for (int i = minBin; i <= maxBin; i++) {
+      if (magnitudes[i] > peakValue) {
+        peakValue = magnitudes[i];
+        peakIndex = i;
+      }
+    }
+
+    if (peakIndex > 0) {
+      // バイン番号から周波数への変換 (f = bin * fs / N)
+      double frequency = peakIndex / (windowSizeSeconds.toDouble());
+      return frequency;
+    }
+
+    return 0.0; // ピークなし
+  }
+
+  /// 信頼度の計算
+  double _calculateReliability(List<double> magnitudes, double peakFrequency) {
+    if (magnitudes.isEmpty) return 0.0;
+
+    // ピークのインデックスを計算
+    int peakIndex = (peakFrequency * windowSizeSeconds).round();
+    if (peakIndex <= 0 || peakIndex >= magnitudes.length) {
+      return 0.0;
+    }
+
+    // ピーク値
+    double peakValue = magnitudes[peakIndex];
+
+    // 平均値
+    double meanValue = magnitudes.reduce((a, b) => a + b) / magnitudes.length;
+
+    // ピーク値と平均値の比率に基づく信頼度
+    double snRatio = (peakValue / (meanValue + 0.001)); // ゼロ除算防止
+
+    // [0, 1]の範囲に正規化
+    return math.min(1.0, snRatio / 5.0); // 比率5.0で100%信頼度
+  }
+
+  /// 直近N個のステップ間隔（ミリ秒）を取得するメソッド
+  List<double> getLatestStepIntervals({int count = 5}) {
+    // 最近の周波数から間隔を計算
+    List<double> intervals = [];
+    for (double freq in _recentFrequencies) {
+      if (freq > 0) {
+        // 周波数から間隔（ミリ秒）に変換
+        double intervalMs = 1000.0 / freq;
+        intervals.add(intervalMs);
+      }
+    }
+
+    // 必要な数だけ返す
+    if (intervals.isEmpty) return [];
+    int numIntervals = math.min(count, intervals.length);
+    return intervals.sublist(intervals.length - numIntervals);
   }
 
   /// 内部状態をリセット
   void reset() {
-    _sensorHistory.clear();
-    _filteredMagnitudeBuffer.clear();
-    _previousFilteredMagnitude = 1.0; // フィルタ状態リセット
-    _stepEvents.clear();
-    _lastPeakMagnitude = 1.2; // ピーク振幅リセット
-    _dynamicThreshold = minDynamicThreshold; // 閾値リセット
-    _isPotentialPeak = false;
-    _valleyAfterPeak = double.maxFinite;
-    _lastStepTimestamp = 0;
-    _lastWindowUpdateTime = 0;
-    _stepCount = 0;
+    _dataBuffer.clear();
     _currentSpm = 0.0;
     _reliability = 0.0;
-    _sampleCount = 0;
+    _stepCount = 0;
+    _lastProcessingTime = 0;
+    _recentFrequencies.clear();
+    _fftMagnitudes.clear();
     print("GaitAnalysisService reset.");
   }
+}
+
+/// 複素数クラス（FFT計算用）
+class _Complex {
+  final double real;
+  final double imag;
+
+  _Complex(this.real, this.imag);
+
+  // 複素数の加算
+  _Complex operator +(_Complex other) {
+    return _Complex(real + other.real, imag + other.imag);
+  }
+
+  // 複素数の減算
+  _Complex operator -(_Complex other) {
+    return _Complex(real - other.real, imag - other.imag);
+  }
+
+  // 複素数の乗算
+  _Complex operator *(_Complex other) {
+    return _Complex(real * other.real - imag * other.imag,
+        real * other.imag + imag * other.real);
+  }
+
+  // 絶対値（大きさ）の計算
+  double get magnitude => math.sqrt(real * real + imag * imag);
+
+  @override
+  String toString() => '($real, ${imag}i)';
 }

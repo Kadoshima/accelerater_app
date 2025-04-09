@@ -240,7 +240,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 歩行解析サービスを初期化
     gaitAnalysisService =
-        GaitAnalysisService(samplingRate: 50.0); // サンプリングレートを指定
+        GaitAnalysisService(); // 新しいアルゴリズムではsamplingRateが不要になりました
 
     _metronome = Metronome(); // Metronomeインスタンスを作成
     _metronome.initialize().then((_) {
@@ -2177,13 +2177,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     ),
                     const SizedBox(height: 16),
                     _buildInfoRow(
-                        '最終ピーク振幅 (G):',
-                        gaitAnalysisService.lastPeakMagnitude
-                            .toStringAsFixed(3)),
-                    _buildInfoRow(
-                        '動的閾値 (G):',
-                        gaitAnalysisService.dynamicThreshold
-                            .toStringAsFixed(3)),
+                        'SPM (歩行ピッチ):',
+                        gaitAnalysisService.currentSpm > 0.1
+                            ? gaitAnalysisService.currentSpm.toStringAsFixed(1)
+                            : '--'),
+                    _buildInfoRow('ピーク検出アルゴリズム:', 'トレンド除去+標準偏差閾値方式'),
                     _buildInfoRow('信頼度スコア:',
                         '${(gaitAnalysisService.reliability * 100).toStringAsFixed(1)}%'),
                     const SizedBox(height: 8),
