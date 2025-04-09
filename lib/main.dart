@@ -3,6 +3,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // flutter_blue_plus�
 import 'dart:async'; // Streamの取り扱いに必要
 import 'dart:io';
 import 'dart:convert'; // jsonDecodeで使用するため、これは残す
+import 'dart:typed_data'; // Uint8List用に追加
 import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -658,7 +659,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
 
     try {
-      // Azureクライアントを作成
+      print('===== Azureアップロードを開始します =====');
+      print('アカウント名: $azureStorageAccount');
+      print('コンテナ名: $containerName');
+      print('ファイル名: $experimentFileName.csv');
+      print('SASトークン長: ${azureSasToken.length}文字');
+
       // アップロードをリトライするメソッド
       bool uploaded = false;
       int retries = 0;
@@ -668,17 +674,57 @@ class _BLEHomePageState extends State<BLEHomePage> {
         try {
           // 接続方法1: SAS Tokenを使う
           if (azureSasToken.isNotEmpty) {
-            final storage = azblob.AzureStorage.parse(
-                'https://$azureStorageAccount.blob.core.windows.net$azureSasToken');
-
+            // 修正: HTTP直接リクエストを使用する方法に変更
             try {
-              await storage.putBlob('/$containerName/$experimentFileName.csv',
-                  bodyBytes: utf8.encode(csvData), contentType: 'text/csv');
+              // SASトークンの先頭に?があれば削除
+              String sasToken = azureSasToken;
+              if (sasToken.startsWith('?')) {
+                sasToken = sasToken.substring(1); // 先頭の?を削除
+              }
 
-              print('BLOBが正常にアップロードされました！（SAS Token使用）');
-              uploaded = true;
+              print(
+                  '処理済みSASトークン（最初の10文字）: ${sasToken.substring(0, math.min(10, sasToken.length))}...');
+
+              // 直接HTTPリクエストを使用してアップロード
+              final accountName = azureStorageAccount;
+              final blobName = '$experimentFileName.csv';
+
+              // URIを構築
+              final uri = Uri.parse(
+                  'https://$accountName.blob.core.windows.net/$containerName/$blobName?$sasToken');
+
+              print('アップロードURL: $uri');
+
+              final headers = {
+                'x-ms-blob-type': 'BlockBlob',
+                'Content-Type': 'text/csv',
+              };
+
+              final bytes = utf8.encode(csvData);
+              print('アップロードデータサイズ: ${bytes.length} バイト');
+
+              final response = await http.put(
+                uri,
+                headers: headers,
+                body: bytes,
+              );
+
+              if (response.statusCode == 201) {
+                print('BLOBが正常にアップロードされました！（HTTP直接リクエスト使用）');
+                print(
+                    'レスポンス: ${response.statusCode} - ${response.reasonPhrase}');
+                uploaded = true;
+              } else {
+                print(
+                    'HTTP直接アップロードエラー: ${response.statusCode} - ${response.reasonPhrase}');
+                print('レスポンス本文: ${response.body}');
+                retries++;
+              }
             } catch (uploadError) {
               print('SAS Tokenアップロードエラー: $uploadError');
+              if (uploadError.toString().contains('Blob')) {
+                print('Blobエラーの詳細情報: ${uploadError.toString()}');
+              }
               retries++;
             }
           }
