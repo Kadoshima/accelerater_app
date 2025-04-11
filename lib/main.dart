@@ -168,6 +168,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // メトロノーム関連
   late Metronome _metronome;
+  bool useVibration = true; // バイブレーション機能の有効/無効フラグ
   bool get isPlaying => _metronome.isPlaying;
   double get currentMusicBPM => _metronome.currentBpm;
   MusicTempo? selectedTempo;
@@ -197,8 +198,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
   ];
 
   // 実験モード関連
-  bool isExperimentMode = false;
-  bool isRealExperimentMode = false; // 本実験モードフラグを追加
+  bool isExperimentMode = false; // 旧：実験モード→新：無音データ収集モード
+  bool isRealExperimentMode = false; // 本実験モード
   int experimentDurationSeconds = 60; // デフォルト1分
   DateTime? experimentStartTime;
   Timer? experimentTimer;
@@ -281,31 +282,54 @@ class _BLEHomePageState extends State<BLEHomePage> {
   List<Map<String, dynamic>> realExperimentTimeSeriesData = [];
   Timer? timeSeriesDataTimer;
 
+  // 無音データ収集モード関連
+  List<Map<String, dynamic>> silentWalkingData = [];
+  Timer? silentWalkingDataTimer;
+  DateTime? silentWalkingStartTime;
+
   @override
   void initState() {
     super.initState();
 
+    // エラーハンドリングの設定
+    FlutterError.onError = (details) {
+      print('FlutterError: ${details.exception}');
+      print(details.stack);
+    };
+
     // 初期化を非同期で安全に行う
-    _initBluetooth();
+    _initializeComponents();
+  }
 
-    // cadenceDetector = RightFootCadenceDetector(); // 新しい検出器を初期化 // 削除
+  // コンポーネントを初期化する
+  Future<void> _initializeComponents() async {
+    try {
+      // 歩行解析サービスの初期化
+      gaitAnalysisService =
+          GaitAnalysisService(); // 新しいアルゴリズムではsamplingRateが不要になりました
 
-    // 歩行解析サービスを初期化
-    gaitAnalysisService =
-        GaitAnalysisService(); // 新しいアルゴリズムではsamplingRateが不要になりました
+      // メトロノームサービスの初期化
+      _metronome = Metronome(); // Metronomeインスタンスを作成
+      await _metronome.initialize();
 
-    _metronome = Metronome(); // Metronomeインスタンスを作成
-    _metronome.initialize().then((_) {
+      // バイブレーション設定を反映
+      _metronome.setVibration(useVibration);
+
       // メトロノームのデフォルトテンポを80BPMに設定
       selectedTempo = metronomeTempoPresets[0]; // デフォルト80 BPM
       _metronome.changeTempo(selectedTempo!.bpm);
-      if (mounted) {
-        setState(() {}); // UI更新
-      }
-    }).catchError((e) {
+
+      // Bluetoothも初期化
+      await _initBluetooth();
+
+      setState(() {}); // UI更新
+    } catch (e) {
       print('メトロノーム初期化エラー: $e');
-    });
+    }
   }
+
+  // バイブレーションサポートのチェックメソッドは削除して、
+  // 単純にHapticFeedbackを使用する実装に変更
 
   // 音楽の再生/一時停止を切り替える
   Future<void> _togglePlayback() async {
@@ -908,6 +932,28 @@ class _BLEHomePageState extends State<BLEHomePage> {
       appBar: AppBar(
         title: const Text('HealthCore M5 - 歩行測定'),
         backgroundColor: Colors.blueGrey.shade800,
+        actions: [
+          // 被験者IDが設定されている場合は表示
+          if (subjectId.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Center(
+                child: Text(
+                  '被験者ID: $subjectId',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          // 被験者ID設定ボタン
+          IconButton(
+            icon: const Icon(Icons.person),
+            tooltip: '被験者IDを設定',
+            onPressed: _showSubjectIdDialog,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -957,7 +1003,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
             child: isRealExperimentMode
                 ? _buildRealExperimentModeUI() // 本実験モードUI
                 : (isExperimentMode
-                    ? _buildExperimentModeUI() // 実験モードUI
+                    ? _buildSilentDataCollectionModeUI() // 無音データ収集モードUI（修正）
                     : _buildDataMonitorModeUI()), // モニターモードUI
           ),
 
@@ -982,8 +1028,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 ElevatedButton.icon(
                   icon: Icon(isExperimentMode
                       ? Icons.monitor_heart_outlined
-                      : Icons.science_outlined),
-                  label: Text(isExperimentMode ? 'モニターモードに戻る' : '精度評価モードへ'),
+                      : Icons.mic_off_outlined),
+                  label: Text(isExperimentMode ? 'モニターモードに戻る' : '無音データ収集モード'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor:
                         isExperimentMode ? Colors.blue : Colors.amber,
@@ -992,13 +1038,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         horizontal: 20, vertical: 12),
                   ),
                   onPressed: () {
-                    setState(() {
-                      isExperimentMode = !isExperimentMode;
-                      isRealExperimentMode = false;
-                      if (!isExperimentMode) {
-                        isRecording = false;
-                      }
-                    });
+                    // 被験者IDが空の場合は、まず被験者IDを入力するダイアログを表示
+                    if (!isExperimentMode && subjectId.isEmpty) {
+                      _showSubjectIdDialog(afterIdSet: () {
+                        _toggleExperimentMode();
+                      });
+                    } else {
+                      _toggleExperimentMode();
+                    }
                   },
                 ),
                 const SizedBox(width: 16),
@@ -1013,15 +1060,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         horizontal: 20, vertical: 12),
                   ),
                   onPressed: () {
-                    setState(() {
-                      isRealExperimentMode = !isRealExperimentMode;
-                      isExperimentMode = false;
-                      if (isRealExperimentMode) {
-                        _initializeRealExperiment();
-                      } else {
-                        _stopRealExperiment();
-                      }
-                    });
+                    // 被験者IDが空の場合は、まず被験者IDを入力するダイアログを表示
+                    if (!isRealExperimentMode && subjectId.isEmpty) {
+                      _showSubjectIdDialog(afterIdSet: () {
+                        _toggleRealExperimentMode();
+                      });
+                    } else {
+                      _toggleRealExperimentMode();
+                    }
                   },
                 ),
               ],
@@ -1100,13 +1146,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 時系列データを記録
   void _recordTimeSeriesData() {
-    // 現在の実験フェーズ名を取得
-    String phaseName = _getPhaseName();
+    // 現在の実験フェーズ名を取得（英語で）
+    String phaseNameEn = _getPhaseNameInEnglish();
 
     // 現在のデータポイントを記録
     realExperimentTimeSeriesData.add({
       'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'phase': phaseName,
+      'phase': phaseNameEn,
       'targetBPM': targetPitch > 0 ? targetPitch : 0.0,
       'currentSPM': _displaySpm > 0 ? _displaySpm : 0.0,
       'phaseStableSeconds': phaseStableSeconds,
@@ -1115,10 +1161,24 @@ class _BLEHomePageState extends State<BLEHomePage> {
       'remainingSeconds': remainingSeconds,
     });
 
-    print('時系列データを記録: ${realExperimentTimeSeriesData.length}件目, '
-        'フェーズ=$phaseName, '
-        'ターゲットBPM=${targetPitch > 0 ? targetPitch.toStringAsFixed(1) : "N/A"}, '
-        '現在SPM=${_displaySpm > 0 ? _displaySpm.toStringAsFixed(1) : "N/A"}');
+    print('Time series data recorded: ${realExperimentTimeSeriesData.length}, '
+        'Phase=$phaseNameEn, '
+        'TargetBPM=${targetPitch > 0 ? targetPitch.toStringAsFixed(1) : "N/A"}, '
+        'CurrentSPM=${_displaySpm > 0 ? _displaySpm.toStringAsFixed(1) : "N/A"}');
+  }
+
+  // フェーズ名を英語で取得
+  String _getPhaseNameInEnglish() {
+    switch (currentPhase) {
+      case ExperimentPhase.freeWalking:
+        return 'Free Walking';
+      case ExperimentPhase.pitchAdjustment:
+        return 'Pitch Adjustment';
+      case ExperimentPhase.pitchIncreasing:
+        return 'Pitch Increasing';
+      default:
+        return 'Unknown';
+    }
   }
 
   // 本実験データをCSV形式で保存してAzureにアップロードする
@@ -1133,63 +1193,78 @@ class _BLEHomePageState extends State<BLEHomePage> {
           ? baseWalkingPitch + (pitchIncreaseCount * pitchIncrementStep)
           : baseWalkingPitch;
 
-      // 1. 要約データをファイルに保存
-      List<List<dynamic>> summaryData = [
-        [
-          '実験日時',
-          '被験者ID',
-          '基準ピッチ(BPM)',
-          '最大到達ピッチ(BPM)',
-          'ピッチ増加回数',
-          'ピッチ増加ステップ(BPM)',
-          '実験継続時間(秒)',
-          '各ピッチ維持時間(秒)',
-          '記録データ数'
-        ],
-        [
-          DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
-          subjectId.isEmpty ? 'unknown' : subjectId,
-          baseWalkingPitch.toStringAsFixed(1),
-          maxReachedBpm.toStringAsFixed(1),
-          pitchIncreaseCount,
-          pitchIncrementStep.toStringAsFixed(1),
-          phaseStartTime != null
-              ? DateTime.now().difference(phaseStartTime!).inSeconds
-              : 0,
-          stableThresholdSeconds,
-          realExperimentTimeSeriesData.length
-        ]
-      ];
-
-      // 要約CSVに変換
-      String summaryCsv = const ListToCsvConverter().convert(summaryData);
-
-      // 要約ファイルに保存
-      final directory = await getApplicationDocumentsDirectory();
-      final summaryPath = '${directory.path}/${fileName}_summary.csv';
-      final summaryFile = File(summaryPath);
-      await summaryFile.writeAsString(summaryCsv);
-      print('本実験要約データをファイルに保存しました: $summaryPath');
-
-      // 2. 時系列データをファイルに保存
+      // 時系列データが空の場合は処理を中止
       if (realExperimentTimeSeriesData.isEmpty) {
-        print('時系列データが空です');
+        print('Time series data is empty');
         return;
       }
 
       // 時系列データのCSVヘッダー
       List<List<dynamic>> timeSeriesCSV = [];
 
+      // メタデータ行（実験の概要情報）
+      timeSeriesCSV.add([
+        '# Experiment_Summary',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ]);
+
+      timeSeriesCSV.add([
+        '# Subject_ID',
+        '# Experiment_DateTime',
+        '# Base_Pitch_BPM',
+        '# Max_Reached_BPM',
+        '# Pitch_Increase_Count',
+        '# Pitch_Increment_Step_BPM',
+        '# Experiment_Duration_Sec',
+        '# Phase_Stability_Time_Sec',
+        '# Data_Points_Count',
+      ]);
+
+      timeSeriesCSV.add([
+        subjectId.isEmpty ? 'unknown' : subjectId,
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+        baseWalkingPitch.toStringAsFixed(1),
+        maxReachedBpm.toStringAsFixed(1),
+        pitchIncreaseCount,
+        pitchIncrementStep.toStringAsFixed(1),
+        phaseStartTime != null
+            ? DateTime.now().difference(phaseStartTime!).inSeconds
+            : 0,
+        stableThresholdSeconds,
+        realExperimentTimeSeriesData.length,
+      ]);
+
+      // 空行を追加してデータ部分と分ける
+      timeSeriesCSV.add([
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ]);
+
       // ヘッダー行
       timeSeriesCSV.add([
-        'タイムスタンプ',
-        '経過時間(秒)',
-        'フェーズ',
-        '目標テンポ(BPM)',
-        '歩行ピッチ(SPM)',
-        '安定時間(秒)',
-        'ピッチ増加回数',
-        '音楽再生中',
+        'Timestamp_Unix',
+        'Timestamp_Readable',
+        'Elapsed_Time_Sec',
+        'Phase',
+        'Target_BPM',
+        'Walking_SPM',
+        'Stability_Time_Sec',
+        'Pitch_Increase_Count',
+        'Audio_Playback',
       ]);
 
       // 最初のタイムスタンプを基準にする
@@ -1201,6 +1276,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
         double elapsedSeconds = (timestamp - firstTimestamp) / 1000.0;
 
         timeSeriesCSV.add([
+          timestamp, // Unix timestamp (milliseconds)
           DateFormat('yyyy-MM-dd HH:mm:ss.SSS')
               .format(DateTime.fromMillisecondsSinceEpoch(timestamp)),
           elapsedSeconds.toStringAsFixed(1),
@@ -1209,7 +1285,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
           dataPoint['currentSPM'].toStringAsFixed(1),
           dataPoint['phaseStableSeconds'],
           dataPoint['pitchIncreaseCount'],
-          dataPoint['isPlaying'] ? '再生中' : '停止中',
+          dataPoint['isPlaying'] ? 'Playing' : 'Stopped',
         ]);
       }
 
@@ -1217,42 +1293,37 @@ class _BLEHomePageState extends State<BLEHomePage> {
       String timeSeriesCsv = const ListToCsvConverter().convert(timeSeriesCSV);
 
       // 時系列ファイルに保存
-      final timeSeriesPath = '${directory.path}/${fileName}_timeseries.csv';
-      final timeSeriesFile = File(timeSeriesPath);
-      await timeSeriesFile.writeAsString(timeSeriesCsv);
-      print('本実験時系列データをファイルに保存しました: $timeSeriesPath');
+      final directory = await getApplicationDocumentsDirectory();
+      final dataPath = '${directory.path}/$fileName.csv';
+      final dataFile = File(dataPath);
+      await dataFile.writeAsString(timeSeriesCsv, encoding: utf8);
+      print('Experiment data saved to file: $dataPath');
 
-      // 3. Azureにアップロード
+      // Azureにアップロード
       try {
-        // 要約データをアップロード
+        // データをアップロード
         String originalFileName = experimentFileName;
-        experimentFileName = '${fileName}_summary';
-        await _uploadDataToAzure(summaryCsv);
-
-        // 時系列データをアップロード
-        experimentFileName = '${fileName}_timeseries';
+        experimentFileName = fileName;
         await _uploadDataToAzure(timeSeriesCsv);
-
-        // 元のファイル名を復元
-        experimentFileName = originalFileName;
+        experimentFileName = originalFileName; // 元に戻す
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('本実験データがAzureにアップロードされました'),
+            content: Text('Experiment data uploaded to Azure'),
             duration: Duration(seconds: 3),
           ),
         );
       } catch (e) {
-        print('Azure本実験データアップロードエラー: $e');
+        print('Azure upload error: $e');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Azureへのアップロードに失敗しました: $e'),
+            content: Text('Failed to upload to Azure: $e'),
             duration: const Duration(seconds: 3),
           ),
         );
       }
     } catch (e) {
-      print('本実験データの保存エラー: $e');
+      print('Error saving experiment data: $e');
     }
   }
 
@@ -1876,116 +1947,66 @@ class _BLEHomePageState extends State<BLEHomePage> {
         int tempStableThreshold = stableThresholdSeconds;
         double tempPitchDifferenceThreshold = pitchDifferenceThreshold;
         double tempPitchIncrementStep = pitchIncrementStep;
+        bool tempUseVibration = useVibration; // バイブレーション設定
 
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return AlertDialog(
-              title: const Text('実験設定'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+        return AlertDialog(
+          title: const Text('実験設定'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 既存の設定項目
+
+                // ... 他の設定 ...
+
+                const SizedBox(height: 16),
+
+                // バイブレーション設定
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // 自由歩行時間
-                    const Text('自由歩行フェーズの時間 (秒)',
+                    const Text('バイブレーション',
                         style: TextStyle(fontWeight: FontWeight.bold)),
-                    Slider(
-                      value: tempFreeWalkingDuration.toDouble(),
-                      min: 30,
-                      max: 120,
-                      divisions: 6,
-                      label: '$tempFreeWalkingDuration秒',
+                    Switch(
+                      value: tempUseVibration,
                       onChanged: (value) {
                         setState(() {
-                          tempFreeWalkingDuration = value.round();
+                          tempUseVibration = value;
                         });
                       },
                     ),
-                    Text('$tempFreeWalkingDuration秒'),
-                    const SizedBox(height: 16),
-
-                    // 安定閾値時間
-                    const Text('安定とみなす時間 (秒)',
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    Slider(
-                      value: tempStableThreshold.toDouble(),
-                      min: 10,
-                      max: 60,
-                      divisions: 5,
-                      label: '$tempStableThreshold秒',
-                      onChanged: (value) {
-                        setState(() {
-                          tempStableThreshold = value.round();
-                        });
-                      },
-                    ),
-                    Text('$tempStableThreshold秒'),
-                    const SizedBox(height: 16),
-
-                    // ピッチ差閾値
-                    const Text('ピッチ変化閾値 (BPM)',
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    Slider(
-                      value: tempPitchDifferenceThreshold,
-                      min: 5,
-                      max: 20,
-                      divisions: 3,
-                      label:
-                          '${tempPitchDifferenceThreshold.toStringAsFixed(1)} BPM',
-                      onChanged: (value) {
-                        setState(() {
-                          tempPitchDifferenceThreshold = value;
-                        });
-                      },
-                    ),
-                    Text(
-                        '${tempPitchDifferenceThreshold.toStringAsFixed(1)} BPM'),
-                    const SizedBox(height: 16),
-
-                    // ピッチ増加ステップ
-                    const Text('ピッチ増加ステップ (BPM)',
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    Slider(
-                      value: tempPitchIncrementStep,
-                      min: 1.0,
-                      max: 10,
-                      divisions: 9,
-                      label: '${tempPitchIncrementStep.toStringAsFixed(1)} BPM',
-                      onChanged: (value) {
-                        setState(() {
-                          tempPitchIncrementStep = value;
-                        });
-                      },
-                    ),
-                    Text('${tempPitchIncrementStep.toStringAsFixed(1)} BPM'),
                   ],
                 ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('キャンセル'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    // 設定を適用
-                    setState(() {
-                      freeWalkingDurationSeconds = tempFreeWalkingDuration;
-                      stableThresholdSeconds = tempStableThreshold;
-                      pitchDifferenceThreshold = tempPitchDifferenceThreshold;
-                      pitchIncrementStep = tempPitchIncrementStep;
-                    });
-                    Navigator.of(context).pop();
-
-                    // メイン画面のUIを更新
-                    this.setState(() {});
-                  },
-                  child: const Text('適用'),
-                ),
+                const Text('音と一緒に振動フィードバックを提供します'),
+                const SizedBox(height: 16),
               ],
-            );
-          },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('キャンセル'),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  freeWalkingDurationSeconds = tempFreeWalkingDuration;
+                  stableThresholdSeconds = tempStableThreshold;
+                  pitchDifferenceThreshold = tempPitchDifferenceThreshold;
+                  pitchIncrementStep = tempPitchIncrementStep;
+                  useVibration = tempUseVibration;
+
+                  // メトロノームにバイブレーション設定を反映
+                  _metronome.setVibration(useVibration);
+                });
+                Navigator.of(context).pop();
+              },
+              child: const Text('保存'),
+            ),
+          ],
         );
       },
     );
@@ -3762,7 +3783,547 @@ class _BLEHomePageState extends State<BLEHomePage> {
       print('切断エラー: $e');
     }
   }
-}
 
-// 歩行検出アルゴリズム用クラス
-// Definitions moved to lib/utils/right_foot_cadence_detector.dart
+  // 無音データ収集モードの初期化
+  void _initializeSilentDataCollection() {
+    // データをリセット
+    silentWalkingData.clear();
+    silentWalkingStartTime = DateTime.now();
+
+    // 通知を表示
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('無音データ収集を開始しました。自然に歩いてください。'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+
+    // 定期的にデータを記録するタイマーを開始（2秒ごと）
+    silentWalkingDataTimer?.cancel();
+    silentWalkingDataTimer =
+        Timer.periodic(const Duration(seconds: 2), (timer) {
+      _recordSilentWalkingData();
+    });
+  }
+
+  // 無音データ収集モードの停止
+  void _stopSilentDataCollection() {
+    // タイマーをキャンセル
+    silentWalkingDataTimer?.cancel();
+    silentWalkingDataTimer = null;
+
+    // データが存在する場合、保存してAzureにアップロード
+    if (silentWalkingData.isNotEmpty) {
+      _saveAndUploadSilentWalkingData();
+    }
+
+    // 通知を表示
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('無音データ収集を終了しました'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  // 無音歩行データを記録
+  void _recordSilentWalkingData() {
+    // 現在のデータポイントを記録
+    silentWalkingData.add({
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'phase': 'Silent Walking',
+      'targetBPM': 0.0, // 無音モードでは目標BPMなし
+      'currentSPM': _displaySpm > 0 ? _displaySpm : 0.0,
+      'stepCount': _displayStepCount,
+      'elapsedSeconds': silentWalkingStartTime != null
+          ? DateTime.now().difference(silentWalkingStartTime!).inSeconds
+          : 0,
+    });
+
+    print('Silent walking data recorded: ${silentWalkingData.length}, '
+        'SPM=${_displaySpm > 0 ? _displaySpm.toStringAsFixed(1) : "N/A"}, '
+        'Steps=$_displayStepCount');
+  }
+
+  // 無音歩行データをCSV形式で保存してAzureにアップロードする
+  Future<void> _saveAndUploadSilentWalkingData() async {
+    try {
+      // ファイル名を設定
+      final fileName =
+          'silent_walking_${subjectId.isEmpty ? 'unknown' : subjectId}_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
+
+      // データが空の場合は処理を中止
+      if (silentWalkingData.isEmpty) {
+        print('Silent walking data is empty');
+        return;
+      }
+
+      // 時系列データのCSVヘッダー
+      List<List<dynamic>> walkingDataCSV = [];
+
+      // メタデータ行（実験の概要情報）
+      walkingDataCSV.add([
+        '# Silent_Walking_Summary',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ]);
+
+      walkingDataCSV.add([
+        '# Subject_ID',
+        '# Experiment_DateTime',
+        '# Duration_Sec',
+        '# Data_Points_Count',
+        '# Avg_SPM',
+        '# Total_Steps',
+      ]);
+
+      // 平均SPMを計算
+      double avgSpm = 0;
+      if (silentWalkingData.isNotEmpty) {
+        double totalSpm = 0;
+        int validDataPoints = 0;
+        for (var dataPoint in silentWalkingData) {
+          double spm = dataPoint['currentSPM'];
+          if (spm > 0) {
+            totalSpm += spm;
+            validDataPoints++;
+          }
+        }
+        if (validDataPoints > 0) {
+          avgSpm = totalSpm / validDataPoints;
+        }
+      }
+
+      // 総歩数を取得（最後のデータポイントの歩数）
+      int totalSteps = silentWalkingData.isNotEmpty
+          ? silentWalkingData.last['stepCount']
+          : 0;
+
+      // 実験時間を計算（最初と最後のタイムスタンプの差）
+      int durationSec = silentWalkingData.length > 1
+          ? (silentWalkingData.last['timestamp'] -
+                  silentWalkingData.first['timestamp']) ~/
+              1000
+          : 0;
+
+      walkingDataCSV.add([
+        subjectId.isEmpty ? 'unknown' : subjectId,
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+        durationSec,
+        silentWalkingData.length,
+        avgSpm.toStringAsFixed(1),
+        totalSteps,
+      ]);
+
+      // 空行を追加してデータ部分と分ける
+      walkingDataCSV.add([
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ]);
+
+      // ヘッダー行
+      walkingDataCSV.add([
+        'Timestamp_Unix',
+        'Timestamp_Readable',
+        'Elapsed_Time_Sec',
+        'Phase',
+        'Walking_SPM',
+        'Step_Count',
+      ]);
+
+      // 最初のタイムスタンプを基準にする
+      int firstTimestamp = silentWalkingData.first['timestamp'];
+
+      // データ行を追加
+      for (var dataPoint in silentWalkingData) {
+        int timestamp = dataPoint['timestamp'];
+        double elapsedSeconds = (timestamp - firstTimestamp) / 1000.0;
+
+        walkingDataCSV.add([
+          timestamp, // Unix timestamp (milliseconds)
+          DateFormat('yyyy-MM-dd HH:mm:ss.SSS')
+              .format(DateTime.fromMillisecondsSinceEpoch(timestamp)),
+          elapsedSeconds.toStringAsFixed(1),
+          dataPoint['phase'],
+          dataPoint['currentSPM'].toStringAsFixed(1),
+          dataPoint['stepCount'],
+        ]);
+      }
+
+      // CSVに変換
+      String walkingDataCsv =
+          const ListToCsvConverter().convert(walkingDataCSV);
+
+      // ファイルに保存
+      final directory = await getApplicationDocumentsDirectory();
+      final dataPath = '${directory.path}/$fileName.csv';
+      final dataFile = File(dataPath);
+      await dataFile.writeAsString(walkingDataCsv, encoding: utf8);
+      print('Silent walking data saved to file: $dataPath');
+
+      // Azureにアップロード
+      try {
+        String originalFileName = experimentFileName;
+        experimentFileName = fileName;
+        await _uploadDataToAzure(walkingDataCsv);
+        experimentFileName = originalFileName; // 元に戻す
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Silent walking data uploaded to Azure'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      } catch (e) {
+        print('Azure upload error: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to upload to Azure: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error saving silent walking data: $e');
+    }
+  }
+
+  // 無音データ収集モードのUIを構築
+  Widget _buildSilentDataCollectionModeUI() {
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 無音データ収集モード説明カード
+            Card(
+              elevation: 4,
+              color: Colors.amber.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.mic_off, color: Colors.amber),
+                        const SizedBox(width: 8),
+                        const Text(
+                          '無音データ収集モード',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        if (silentWalkingData.isNotEmpty)
+                          Text(
+                            '${silentWalkingData.length}件記録中',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.amber.shade800,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      '音声フィードバックなしで自然な歩行データを収集します。歩きながら自然な歩行パターンを記録します。',
+                      style: TextStyle(fontSize: 14),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '経過時間: ${silentWalkingStartTime != null ? (DateTime.now().difference(silentWalkingStartTime!).inSeconds / 60).toStringAsFixed(1) : "0.0"} 分',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.save),
+                          label: const Text('データを保存してアップロード'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 12),
+                          ),
+                          onPressed: silentWalkingData.isEmpty
+                              ? null
+                              : _stopSilentDataCollection,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // 歩行ピッチ情報カード
+            Card(
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.directions_walk, color: Colors.blue),
+                        SizedBox(width: 8),
+                        Text(
+                          '歩行ピッチ情報',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '現在のピッチ:',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              '${_displaySpm > 0 ? _displaySpm.toStringAsFixed(1) : "--"} SPM',
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blue,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text(
+                              '総歩数:',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            Text(
+                              '$_displayStepCount 歩',
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // SPM推移グラフ
+            if (bpmSpots.length > 1)
+              Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.timeline, color: Colors.purple),
+                          SizedBox(width: 8),
+                          Text(
+                            'SPM推移グラフ',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        height: 200,
+                        child: LineChart(
+                          LineChartData(
+                            gridData: FlGridData(show: true),
+                            titlesData: FlTitlesData(
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  getTitlesWidget: (value, meta) =>
+                                      Text(value.toInt().toString()),
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 30,
+                                  interval: 5000, // 5秒ごと
+                                  getTitlesWidget: (value, meta) {
+                                    final dt =
+                                        DateTime.fromMillisecondsSinceEpoch(
+                                            value.toInt());
+                                    return Text(
+                                        DateFormat('HH:mm:ss').format(dt));
+                                  },
+                                ),
+                              ),
+                              topTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: AxisTitles(
+                                  sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            borderData: FlBorderData(show: true),
+                            minX: bpmSpots.first.x,
+                            maxX: bpmSpots.last.x,
+                            minY: minY,
+                            maxY: maxY,
+                            lineBarsData: [
+                              // 検出SPM
+                              LineChartBarData(
+                                spots: bpmSpots,
+                                isCurved: true,
+                                color: Colors.purple,
+                                barWidth: 3,
+                                dotData: FlDotData(show: false),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 被験者ID入力ダイアログを表示
+  void _showSubjectIdDialog({Function? afterIdSet}) {
+    String tempSubjectId = subjectId;
+    // TextEditingControllerを使用
+    final TextEditingController controller =
+        TextEditingController(text: subjectId);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, // ダイアログ外をタップしても閉じない
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('被験者IDを入力'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('実験データを識別するための被験者IDを入力してください。\n例: S001, P01, Taro など'),
+              const SizedBox(height: 16),
+              TextField(
+                decoration: const InputDecoration(
+                  labelText: '被験者ID',
+                  hintText: '例: S001',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (value) {
+                  tempSubjectId = value;
+                },
+                controller: controller, // initialValueの代わりにcontrollerを使用
+                autofocus: true,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('キャンセル'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (tempSubjectId.trim().isNotEmpty) {
+                  setState(() {
+                    subjectId = tempSubjectId.trim();
+                  });
+                  Navigator.of(context).pop();
+
+                  // コールバックがある場合は実行
+                  if (afterIdSet != null) {
+                    afterIdSet();
+                  }
+
+                  // 確認メッセージを表示
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('被験者ID「$subjectId」を設定しました'),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                } else {
+                  // 空の場合はエラーメッセージを表示
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('被験者IDを入力してください'),
+                      backgroundColor: Colors.red,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('設定'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // 無音データ収集モードの切り替え
+  void _toggleExperimentMode() {
+    setState(() {
+      isExperimentMode = !isExperimentMode;
+      isRealExperimentMode = false;
+      if (!isExperimentMode) {
+        _stopSilentDataCollection();
+      } else {
+        _initializeSilentDataCollection();
+      }
+    });
+  }
+
+  // 本実験モードの切り替え
+  void _toggleRealExperimentMode() {
+    setState(() {
+      isRealExperimentMode = !isRealExperimentMode;
+      isExperimentMode = false;
+      if (isRealExperimentMode) {
+        _initializeRealExperiment();
+      } else {
+        _stopRealExperiment();
+      }
+    });
+  }
+}

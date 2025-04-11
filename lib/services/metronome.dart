@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/services.dart'; // for HapticFeedback
 import 'package:just_audio/just_audio.dart';
+import 'package:flutter/foundation.dart';
 
 /// メトロノーム機能を提供するクラス（波形生成バージョン）
 class Metronome {
@@ -20,6 +21,7 @@ class Metronome {
 
   bool _isPlaying = false;
   double _currentBpm = 100.0;
+  bool _shouldVibrate = true; // バイブレーション機能を有効にするフラグ
 
   bool get isPlaying => _isPlaying;
   double get currentBpm => _currentBpm;
@@ -141,6 +143,14 @@ class Metronome {
 
   /// 強拍のクリック音を再生する（小節の頭、アクセント）
   Future<void> _playStrongBeat({bool isTest = false}) async {
+    // 先にバイブレーションを起動（音より100ms早く）
+    if (_shouldVibrate) {
+      HapticFeedback.heavyImpact();
+    }
+
+    // 音声の遅延（バイブレーションより後に音を鳴らす）
+    await Future.delayed(const Duration(milliseconds: 0));
+
     if (_strongBeatWaveform != null) {
       try {
         // 現在再生中の場合は一度停止
@@ -156,16 +166,22 @@ class Metronome {
         }
       } catch (e) {
         print("強拍音声再生エラー: $e");
-        HapticFeedback.mediumImpact(); // 強い触覚フィードバック
       }
     } else {
-      print("強拍音声データがありません - 触覚フィードバックを使用");
-      HapticFeedback.mediumImpact();
+      print("強拍音声データがありません - 触覚フィードバックのみ使用");
     }
   }
 
   /// 弱拍のクリック音を再生する（小節の頭以外）
   Future<void> _playWeakBeat() async {
+    // 先にバイブレーションを起動（音より100ms早く）
+    if (_shouldVibrate) {
+      HapticFeedback.mediumImpact();
+    }
+
+    // 音声の遅延（バイブレーションより後に音を鳴らす）
+    await Future.delayed(const Duration(milliseconds: 100));
+
     if (_weakBeatWaveform != null) {
       try {
         // 現在再生中の場合は一度停止
@@ -177,11 +193,9 @@ class Metronome {
         await _audioPlayer2.play();
       } catch (e) {
         print("弱拍音声再生エラー: $e");
-        HapticFeedback.lightImpact(); // 弱い触覚フィードバック
       }
     } else {
-      print("弱拍音声データがありません - 軽い触覚フィードバックを使用");
-      HapticFeedback.lightImpact();
+      print("弱拍音声データがありません - 軽い触覚フィードバックのみ使用");
     }
   }
 
@@ -264,6 +278,15 @@ class Metronome {
     _audioPlayer1.dispose();
     _audioPlayer2.dispose();
   }
+
+  // バイブレーション機能の有効/無効を切り替える
+  void setVibration(bool enabled) {
+    _shouldVibrate = enabled;
+    print('バイブレーション機能: ${enabled ? '有効' : '無効'}');
+  }
+
+  // バイブレーション機能が有効かどうかを取得
+  bool get vibrationEnabled => _shouldVibrate;
 }
 
 /// just_audioで使用するためのカスタムオーディオソース
