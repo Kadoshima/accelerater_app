@@ -14,11 +14,13 @@ import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart'; // 位置情報を取得するためのパッケージ
+import 'package:shared_preferences/shared_preferences.dart';
 
 // 独自モジュール
 import 'models/sensor_data.dart';
 import 'utils/gait_analysis_service.dart'; // 新しいサービスをインポート
 import 'services/metronome.dart'; // メトロノームサービス
+import 'services/background_service.dart'; // バックグラウンドサービス
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
 enum ExperimentPhase {
@@ -51,6 +53,9 @@ void main() async {
     // iOS固有の初期化（ログレベルを下げる）
     FlutterBluePlus.setLogLevel(LogLevel.info, color: false);
   }
+
+  // バックグラウンドサービスの初期化
+  await BackgroundService.initialize();
 
   runApp(const MyApp());
 }
@@ -201,7 +206,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 実験モード関連
   bool isExperimentMode = false; // 旧：実験モード→新：無音データ収集モード
   bool isRealExperimentMode = false; // 本実験モード
-  int experimentDurationSeconds = 60; // デフォルト1分
+  int experimentDurationSeconds = 300; // デフォルト5分
   DateTime? experimentStartTime;
   Timer? experimentTimer;
   int remainingSeconds = 0;
@@ -220,8 +225,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
   DateTime? lastPitchChangeTime; // 最後にピッチを変更した時刻
 
   // 設定パラメータ
-  int freeWalkingDurationSeconds = 60; // 自由歩行フェーズの期間
-  int stableThresholdSeconds = 30; // 安定とみなす秒数
+  int freeWalkingDurationSeconds = 120; // 自由歩行フェーズの期間 (2分)
+  int stableThresholdSeconds = 60; // 安定とみなす秒数 (1分)
   double pitchDifferenceThreshold = 10.0; // ピッチ差の閾値
   double pitchIncrementStep = 2.0; // ピッチ増加ステップ
 
@@ -552,19 +557,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   const SizedBox(height: 20),
                   const Text('記録時間',
                       style: TextStyle(fontWeight: FontWeight.bold)),
-                  Slider(
-                    value: tempDuration / 60,
-                    min: 1,
-                    max: 5,
-                    divisions: 4,
-                    label: '${(tempDuration / 60).round()}分',
+                  DropdownButton<int>(
+                    value: tempDuration,
+                    isExpanded: true,
+                    items: [
+                      DropdownMenuItem<int>(value: 5 * 60, child: Text('5分')),
+                      DropdownMenuItem<int>(value: 10 * 60, child: Text('10分')),
+                      DropdownMenuItem<int>(value: 15 * 60, child: Text('15分')),
+                      DropdownMenuItem<int>(value: 20 * 60, child: Text('20分')),
+                    ],
                     onChanged: (value) {
                       setState(() {
-                        tempDuration = (value * 60).round();
+                        tempDuration = value ?? 5 * 60;
                       });
                     },
                   ),
-                  Text('${(tempDuration / 60).round()}分'),
+                  Text('実験時間: ${tempDuration ~/ 60}分 (${tempDuration}秒)'),
                 ],
               ),
             ),
@@ -620,7 +628,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   }
 
   // 実験を開始する（内部実装）
-  void _startExperiment() {
+  void _startExperiment() async {
     // 実験開始時刻を記録
     experimentStartTime = DateTime.now();
     remainingSeconds = experimentDurationSeconds;
@@ -628,6 +636,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // 実験ファイル名を設定（被験者番号を含める）
     experimentFileName =
         'gait_data_${subjectId}_${selectedTempo?.bpm ?? currentMusicBPM}_target_${DateFormat('yyyyMMdd_HHmmss').format(experimentStartTime!)}';
+
+    // 実験状態をSharedPreferencesに保存
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_experiment_running', true);
+    await prefs.setString('experiment_file_name', experimentFileName);
+    await prefs.setString('subject_id', subjectId);
+    await prefs.setInt('experiment_duration', experimentDurationSeconds);
+    await prefs.setDouble('target_bpm', selectedTempo?.bpm ?? currentMusicBPM);
+
+    // バックグラウンドサービスを開始
+    await BackgroundService.startService();
 
     // 加速度データを高頻度（100ms間隔）で記録するタイマー
     experimentTimer =
@@ -729,6 +748,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
   void _finishExperiment() async {
     if (!isRecording) return;
 
+    // 実験状態をSharedPreferencesから削除
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_experiment_running', false);
+
+    // バックグラウンドサービスを停止
+    await BackgroundService.stopService();
+
     setState(() {
       isRecording = false;
       remainingSeconds = 0;
@@ -745,29 +771,33 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
     }
 
-    // CSVファイルに保存
+    // CSVに変換してローカルに保存
     String csvData = await _saveExperimentDataToCSV();
 
-    // 自動的にAzureにアップロード
-    if (csvData.isNotEmpty) {
-      try {
-        await _uploadDataToAzure(csvData);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('データがAzureに自動アップロードされました'),
-            duration: Duration(seconds: 3),
-          ),
-        );
-      } catch (e) {
-        print('Azureアップロードエラー: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Azureへのアップロードに失敗しました: $e'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
+    // Azureにデータをアップロード
+    try {
+      await _uploadDataToAzure(csvData);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('データがAzureに自動アップロードされました'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      print('Azureアップロードエラー: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Azureへのアップロードに失敗しました: $e'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
+
+    // 実験データをクリア
+    experimentRecords.clear();
+    bpmSpots.clear();
+    minY = 40;
+    maxY = 160;
   }
 
   // 実験データをCSVに保存し、データを返す
@@ -1987,7 +2017,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'ピッチを音楽に合わせてください。30秒間安定したら次のフェーズに移行します。',
+              'ピッチを音楽に合わせてください。1分間安定したら次のフェーズに移行します。',
               style: TextStyle(color: Colors.white),
             ),
             const SizedBox(height: 8),
@@ -2004,7 +2034,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'ピッチを音楽に合わせてください。30秒間安定したら次のピッチレベルに進みます。',
+              'ピッチを音楽に合わせてください。1分間安定したら次のピッチレベルに進みます。',
               style: TextStyle(color: Colors.white),
             ),
             const SizedBox(height: 8),
