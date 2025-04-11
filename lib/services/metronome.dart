@@ -15,13 +15,24 @@ class Metronome {
   Uint8List? _strongBeatWaveform;
   Uint8List? _weakBeatWaveform;
 
+  // AudioSource
+  AudioSource? _strongBeatSource;
+  AudioSource? _weakBeatSource;
+
+  // 高精度タイマー用変数
   Timer? _timer;
+  DateTime? _lastBeatTime;
   int _beatCount = 0; // 拍カウント（強拍・弱拍の切り替えに使用）
   final int _beatsPerBar = 4; // 1小節あたりの拍数（4/4拍子）
+  int _nextBeatScheduledAt = 0; // 次の拍がスケジュールされた時間（ミリ秒）
 
   bool _isPlaying = false;
   double _currentBpm = 100.0;
   bool _shouldVibrate = true; // バイブレーション機能を有効にするフラグ
+
+  // シーケンシャル実行制御用
+  bool _isProcessingBeat = false;
+  final List<Future<void> Function()> _pendingOperations = [];
 
   bool get isPlaying => _isPlaying;
   double get currentBpm => _currentBpm;
@@ -47,12 +58,23 @@ class Metronome {
         amplitude: 0.6, // 小さめ
       );
 
+      // AudioSourceを事前に作成
+      _strongBeatSource = MyCustomSource(_strongBeatWaveform!);
+      _weakBeatSource = MyCustomSource(_weakBeatWaveform!);
+
+      // 音声を事前にロード
+      await _audioPlayer1.setAudioSource(_strongBeatSource!);
+      await _audioPlayer2.setAudioSource(_weakBeatSource!);
+
       print("メトロノーム波形生成完了: "
           "強拍=${_strongBeatWaveform!.length}バイト, "
           "弱拍=${_weakBeatWaveform!.length}バイト");
 
-      // テスト再生
-      await _playStrongBeat(isTest: true);
+      // ウォームアップ（一度再生してシステムを準備）
+      await _audioPlayer1.setVolume(0); // 無音で
+      await _audioPlayer1.play(); // 再生
+      await _audioPlayer1.stop(); // 即停止
+      await _audioPlayer1.setVolume(1.0); // 音量戻す
     } catch (e) {
       print("メトロノーム初期化エラー: $e");
       // エラーが発生した場合でも処理を続行する（音なしで動くように）
@@ -69,10 +91,15 @@ class Metronome {
 
     _isPlaying = true;
     _beatCount = 0; // カウントをリセット
+    _lastBeatTime = DateTime.now(); // 開始時刻を記録
+    _nextBeatScheduledAt = 0; // スケジュールをリセット
+    _isProcessingBeat = false; // 処理フラグをリセット
+    _pendingOperations.clear(); // 保留中の操作をクリア
 
-    // 波形データの準備確認
-    if (_strongBeatWaveform == null) {
-      print("警告: 波形データがないままメトロノームを開始しています");
+    // 波形データとソースの準備確認
+    if (_strongBeatSource == null || _weakBeatSource == null) {
+      print("警告: 音源が準備できていないため再初期化します");
+
       // 波形を再生成
       _strongBeatWaveform = _generateClickWaveform(
         frequency: 1000,
@@ -86,14 +113,21 @@ class Metronome {
         amplitude: 0.6,
       );
 
-      print("メトロノーム起動時に波形を再生成しました");
+      // AudioSourceを作成
+      _strongBeatSource = MyCustomSource(_strongBeatWaveform!);
+      _weakBeatSource = MyCustomSource(_weakBeatWaveform!);
+
+      // 音声をプリロード
+      await _audioPlayer1.setAudioSource(_strongBeatSource!);
+      await _audioPlayer2.setAudioSource(_weakBeatSource!);
     }
 
-    _startTimer();
+    // タイマーで定期的な実行を開始
+    _startHighPrecisionTimer();
     print("メトロノーム開始: $_currentBpm BPM");
 
     // 最初のクリックを即座に行う（常に強拍から開始）
-    _playStrongBeat();
+    await _playStrongBeat();
   }
 
   /// メトロノームを停止する
@@ -102,6 +136,12 @@ class Metronome {
     _isPlaying = false;
     _timer?.cancel();
     _timer = null;
+    _lastBeatTime = null;
+
+    // 保留中の操作をクリア
+    _pendingOperations.clear();
+    _isProcessingBeat = false;
+
     // 両方の音声を停止
     await _audioPlayer1.stop();
     await _audioPlayer2.stop();
@@ -111,91 +151,129 @@ class Metronome {
   /// メトロノームのテンポ（BPM）を変更する
   Future<void> changeTempo(double newBpm) async {
     if (newBpm <= 0) return; // 不正なBPMは無視
+
+    // 精度を確保するため、小数点以下第一位までに丸める（0.1単位）
+    newBpm = (newBpm * 10).round() / 10;
+
     _currentBpm = newBpm;
     print("メトロノームテンポ変更: $_currentBpm BPM");
+
     if (_isPlaying) {
+      // 再生中の場合、タイマーをリセットして精度を保つ
       _timer?.cancel();
-      _startTimer();
+      _lastBeatTime = DateTime.now(); // 現在時刻を基準にリセット
+      _nextBeatScheduledAt = 0; // スケジュールをリセット
+      _startHighPrecisionTimer();
     }
   }
 
-  /// タイマーを開始または再開する
-  void _startTimer() {
-    final intervalMilliseconds = (60000 / _currentBpm).round();
-    _timer =
-        Timer.periodic(Duration(milliseconds: intervalMilliseconds), (timer) {
+  /// 高精度タイマーを開始する
+  void _startHighPrecisionTimer() {
+    // 高頻度でチェックするために10msごとにタイマーを実行
+    _timer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
       if (!_isPlaying) {
         timer.cancel();
         return;
       }
 
-      // 拍カウントを増やす
-      _beatCount = (_beatCount + 1) % _beatsPerBar;
-
-      // 強拍（小節の頭）と弱拍で異なる音を鳴らす
-      if (_beatCount == 0) {
-        _playStrongBeat(); // 1拍目は強拍
-      } else {
-        _playWeakBeat(); // 2拍目以降は弱拍
-      }
+      _checkAndPlayNextBeat();
     });
   }
 
-  /// 強拍のクリック音を再生する（小節の頭、アクセント）
-  Future<void> _playStrongBeat({bool isTest = false}) async {
-    // 先にバイブレーションを起動（音より100ms早く）
-    if (_shouldVibrate) {
-      HapticFeedback.heavyImpact();
+  /// 次の拍を再生するタイミングかチェックし、適切なタイミングで再生
+  void _checkAndPlayNextBeat() {
+    if (_lastBeatTime == null || _isProcessingBeat) return;
+
+    final now = DateTime.now();
+    final intervalMilliseconds = (60000 / _currentBpm).round();
+
+    // 前回の拍から経過したミリ秒
+    final elapsedMillis = now.difference(_lastBeatTime!).inMilliseconds;
+
+    // 次の拍の予定時刻（前回の拍からの経過時間がインターバル以上）
+    if (elapsedMillis >= intervalMilliseconds &&
+        _nextBeatScheduledAt <= now.millisecondsSinceEpoch) {
+      // 余分な時間を計算（精度を高めるため）
+      final overshoot = elapsedMillis - intervalMilliseconds;
+
+      // 次の拍をスケジュール
+      _nextBeatScheduledAt =
+          now.millisecondsSinceEpoch + intervalMilliseconds - overshoot;
+
+      // 拍カウントを増やす
+      _beatCount = (_beatCount + 1) % _beatsPerBar;
+
+      // 更新された最後の拍の時間
+      _lastBeatTime = now;
+
+      // 非同期で拍を再生（UI更新を妨げないように）
+      _executeSequentially(() async {
+        // 強拍（小節の頭）と弱拍で異なる音を鳴らす
+        if (_beatCount == 0) {
+          await _playStrongBeat(); // 1拍目は強拍
+        } else {
+          await _playWeakBeat(); // 2拍目以降は弱拍
+        }
+      });
+    }
+  }
+
+  /// 関数を順番に実行するために使用するヘルパーメソッド
+  Future<void> _executeSequentially(Future<void> Function() operation) async {
+    if (_isProcessingBeat) {
+      // 既に処理中の場合はキューに追加
+      _pendingOperations.add(operation);
+      return;
     }
 
-    // 音声の遅延（バイブレーションより後に音を鳴らす）
-    await Future.delayed(const Duration(milliseconds: 0));
+    _isProcessingBeat = true;
 
-    if (_strongBeatWaveform != null) {
-      try {
-        // 現在再生中の場合は一度停止
-        await _audioPlayer1.stop();
+    try {
+      await operation();
+    } finally {
+      _isProcessingBeat = false;
 
-        // 波形データをメモリ上で再生
-        final audioSource = MyCustomSource(_strongBeatWaveform!);
-        await _audioPlayer1.setAudioSource(audioSource);
-        await _audioPlayer1.play();
-
-        if (isTest) {
-          print("強拍テスト音声再生: 成功");
-        }
-      } catch (e) {
-        print("強拍音声再生エラー: $e");
+      // キューに保留中の操作があれば実行
+      if (_pendingOperations.isNotEmpty) {
+        final nextOperation = _pendingOperations.removeAt(0);
+        _executeSequentially(nextOperation);
       }
-    } else {
-      print("強拍音声データがありません - 触覚フィードバックのみ使用");
+    }
+  }
+
+  /// 強拍のクリック音を再生する（小節の頭、アクセント）
+  Future<void> _playStrongBeat() async {
+    if (!_isPlaying) return;
+
+    try {
+      // バイブレーションと音を同時に実行
+      if (_shouldVibrate) {
+        HapticFeedback.heavyImpact();
+      }
+
+      // すでにAudioSourceが設定されているので直接再生
+      await _audioPlayer1.seek(Duration.zero); // 位置をリセット
+      await _audioPlayer1.play();
+    } catch (e) {
+      print("強拍音声再生エラー: $e");
     }
   }
 
   /// 弱拍のクリック音を再生する（小節の頭以外）
   Future<void> _playWeakBeat() async {
-    // 先にバイブレーションを起動（音より100ms早く）
-    if (_shouldVibrate) {
-      HapticFeedback.mediumImpact();
-    }
+    if (!_isPlaying) return;
 
-    // 音声の遅延（バイブレーションより後に音を鳴らす）
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    if (_weakBeatWaveform != null) {
-      try {
-        // 現在再生中の場合は一度停止
-        await _audioPlayer2.stop();
-
-        // 波形データをメモリ上で再生
-        final audioSource = MyCustomSource(_weakBeatWaveform!);
-        await _audioPlayer2.setAudioSource(audioSource);
-        await _audioPlayer2.play();
-      } catch (e) {
-        print("弱拍音声再生エラー: $e");
+    try {
+      // バイブレーションと音を同時に実行
+      if (_shouldVibrate) {
+        HapticFeedback.mediumImpact();
       }
-    } else {
-      print("弱拍音声データがありません - 軽い触覚フィードバックのみ使用");
+
+      // すでにAudioSourceが設定されているので直接再生
+      await _audioPlayer2.seek(Duration.zero); // 位置をリセット
+      await _audioPlayer2.play();
+    } catch (e) {
+      print("弱拍音声再生エラー: $e");
     }
   }
 

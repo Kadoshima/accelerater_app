@@ -13,6 +13,7 @@ import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
 import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart'; // 位置情報を取得するためのパッケージ
 
 // 独自モジュール
 import 'models/sensor_data.dart';
@@ -287,6 +288,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
   Timer? silentWalkingDataTimer;
   DateTime? silentWalkingStartTime;
 
+  // 位置情報関連
+  Position? _currentPosition;
+  bool _isLocationEnabled = false;
+  String _locationErrorMessage = '';
+
   @override
   void initState() {
     super.initState();
@@ -297,8 +303,82 @@ class _BLEHomePageState extends State<BLEHomePage> {
       print(details.stack);
     };
 
+    // 位置情報の権限を確認・リクエスト
+    _checkLocationPermission();
+
     // 初期化を非同期で安全に行う
     _initializeComponents();
+  }
+
+  // 位置情報の権限をチェックしてリクエスト
+  Future<void> _checkLocationPermission() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    try {
+      // 位置情報サービスが有効かチェック
+      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          _isLocationEnabled = false;
+          _locationErrorMessage = '位置情報サービスが無効です。設定から有効にしてください。';
+        });
+        return;
+      }
+
+      // 位置情報の権限をチェック
+      permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        // 権限がない場合はリクエスト
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() {
+            _isLocationEnabled = false;
+            _locationErrorMessage = '位置情報の権限が拒否されました。';
+          });
+          return;
+        }
+      }
+
+      // 永続的に拒否されている場合
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          _isLocationEnabled = false;
+          _locationErrorMessage = '位置情報の権限が永続的に拒否されています。設定から権限を許可してください。';
+        });
+        return;
+      }
+
+      // 位置情報の権限が許可された
+      setState(() {
+        _isLocationEnabled = true;
+        _locationErrorMessage = '';
+      });
+
+      // 初期位置を取得
+      _getCurrentLocation();
+    } catch (e) {
+      print('位置情報権限チェックエラー: $e');
+      setState(() {
+        _isLocationEnabled = false;
+        _locationErrorMessage = '位置情報の設定中にエラーが発生しました。';
+      });
+    }
+  }
+
+  // 現在の位置情報を取得
+  Future<void> _getCurrentLocation() async {
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      setState(() {
+        _currentPosition = position;
+        print('位置情報取得: ${position.latitude}, ${position.longitude}');
+      });
+    } catch (e) {
+      print('位置情報取得エラー: $e');
+    }
   }
 
   // コンポーネントを初期化する
@@ -1149,6 +1229,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // 現在の実験フェーズ名を取得（英語で）
     String phaseNameEn = _getPhaseNameInEnglish();
 
+    // 位置情報が設定されていない場合は取得を試みる
+    if (_isLocationEnabled && _currentPosition == null) {
+      _getCurrentLocation();
+    }
+
     // 現在のデータポイントを記録
     realExperimentTimeSeriesData.add({
       'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -1159,6 +1244,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
       'pitchIncreaseCount': pitchIncreaseCount,
       'isPlaying': isPlaying,
       'remainingSeconds': remainingSeconds,
+      'latitude': _currentPosition?.latitude,
+      'longitude': _currentPosition?.longitude,
+      'altitude': _currentPosition?.altitude,
+      'speed': _currentPosition?.speed,
     });
 
     print('Time series data recorded: ${realExperimentTimeSeriesData.length}, '
@@ -1265,6 +1354,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
         'Stability_Time_Sec',
         'Pitch_Increase_Count',
         'Audio_Playback',
+        'Latitude',
+        'Longitude',
+        'Altitude',
+        'Speed',
       ]);
 
       // 最初のタイムスタンプを基準にする
@@ -1286,6 +1379,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
           dataPoint['phaseStableSeconds'],
           dataPoint['pitchIncreaseCount'],
           dataPoint['isPlaying'] ? 'Playing' : 'Stopped',
+          dataPoint['latitude'] != null
+              ? dataPoint['latitude'].toString()
+              : 'N/A',
+          dataPoint['longitude'] != null
+              ? dataPoint['longitude'].toString()
+              : 'N/A',
+          dataPoint['altitude'] != null
+              ? dataPoint['altitude'].toString()
+              : 'N/A',
+          dataPoint['speed'] != null ? dataPoint['speed'].toString() : 'N/A',
         ]);
       }
 
@@ -3828,6 +3931,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 無音歩行データを記録
   void _recordSilentWalkingData() {
+    // 位置情報が設定されていない場合は取得を試みる
+    if (_isLocationEnabled && _currentPosition == null) {
+      _getCurrentLocation();
+    }
+
     // 現在のデータポイントを記録
     silentWalkingData.add({
       'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -3838,6 +3946,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
       'elapsedSeconds': silentWalkingStartTime != null
           ? DateTime.now().difference(silentWalkingStartTime!).inSeconds
           : 0,
+      'latitude': _currentPosition?.latitude,
+      'longitude': _currentPosition?.longitude,
+      'altitude': _currentPosition?.altitude,
+      'speed': _currentPosition?.speed,
     });
 
     print('Silent walking data recorded: ${silentWalkingData.length}, '
@@ -3936,6 +4048,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
         'Phase',
         'Walking_SPM',
         'Step_Count',
+        'Latitude',
+        'Longitude',
+        'Altitude',
+        'Speed',
       ]);
 
       // 最初のタイムスタンプを基準にする
@@ -3954,6 +4070,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
           dataPoint['phase'],
           dataPoint['currentSPM'].toStringAsFixed(1),
           dataPoint['stepCount'],
+          dataPoint['latitude'] != null
+              ? dataPoint['latitude'].toString()
+              : 'N/A',
+          dataPoint['longitude'] != null
+              ? dataPoint['longitude'].toString()
+              : 'N/A',
+          dataPoint['altitude'] != null
+              ? dataPoint['altitude'].toString()
+              : 'N/A',
+          dataPoint['speed'] != null ? dataPoint['speed'].toString() : 'N/A',
         ]);
       }
 
