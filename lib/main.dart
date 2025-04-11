@@ -207,21 +207,21 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 本実験モード関連
   ExperimentPhase currentPhase = ExperimentPhase.freeWalking;
   int phaseStableSeconds = 0; // 現在のフェーズで安定している秒数
-  double baseWalkingPitch = 0.0; // 自由歩行時の基準ピッチ
-  double targetPitch = 0.0; // 目標ピッチ
-  DateTime? phaseStartTime; // 各フェーズの開始時刻
+  double baseWalkingPitch = 0.0; // 自由歩行時のピッチ（BPM）
+  double targetPitch = 0.0; // 現在の目標ピッチ（BPM）
+  DateTime? phaseStartTime; // フェーズ開始時刻
   List<double> recentPitches = []; // 最近の歩行ピッチを記録
   Timer? pitchAdjustmentTimer; // ピッチ調整用タイマー
   bool isPitchStable = false; // ピッチが安定しているか
-  int stableCountdown = 0; // 安定までのカウントダウン
-  int pitchIncreaseCount = 0; // ピッチ増加回数
+  int stableCountdown = 0; // 安定までのカウントダウン秒数
+  int pitchIncreaseCount = 0; // ピッチを何回増加させたか
   DateTime? lastPitchChangeTime; // 最後にピッチを変更した時刻
 
   // 設定パラメータ
   int freeWalkingDurationSeconds = 60; // 自由歩行フェーズの期間
   int stableThresholdSeconds = 30; // 安定とみなす秒数
   double pitchDifferenceThreshold = 10.0; // ピッチ差の閾値
-  double pitchIncrementStep = 5.0; // ピッチ増加ステップ
+  double pitchIncrementStep = 2.0; // ピッチ増加ステップ
 
   // 歩行解析サービス
   late final GaitAnalysisService gaitAnalysisService;
@@ -276,6 +276,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
       dotenv.env['AZURE_CONNECTION_STRING'] ?? '';
   String get containerName =>
       dotenv.env['AZURE_CONTAINER_NAME'] ?? 'accelerationdata';
+
+  // 本実験の時系列データを記録
+  List<Map<String, dynamic>> realExperimentTimeSeriesData = [];
+  Timer? timeSeriesDataTimer;
 
   @override
   void initState() {
@@ -1042,6 +1046,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
     pitchIncreaseCount = 0;
     lastPitchChangeTime = null;
 
+    // 時系列データをリセット
+    realExperimentTimeSeriesData.clear();
+
     // 通知を表示
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -1054,6 +1061,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
     pitchAdjustmentTimer?.cancel();
     pitchAdjustmentTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       _updateExperimentPhase();
+    });
+
+    // 定期的に時系列データを記録するタイマーを開始（2秒ごと）
+    timeSeriesDataTimer?.cancel();
+    timeSeriesDataTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      _recordTimeSeriesData();
     });
   }
 
@@ -1068,6 +1081,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
     pitchAdjustmentTimer?.cancel();
     pitchAdjustmentTimer = null;
 
+    timeSeriesDataTimer?.cancel();
+    timeSeriesDataTimer = null;
+
+    // 実験データが存在する場合、保存してAzureにアップロード
+    if (realExperimentTimeSeriesData.isNotEmpty) {
+      _saveAndUploadRealExperimentData();
+    }
+
     // 通知を表示
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -1075,6 +1096,164 @@ class _BLEHomePageState extends State<BLEHomePage> {
         duration: Duration(seconds: 2),
       ),
     );
+  }
+
+  // 時系列データを記録
+  void _recordTimeSeriesData() {
+    // 現在の実験フェーズ名を取得
+    String phaseName = _getPhaseName();
+
+    // 現在のデータポイントを記録
+    realExperimentTimeSeriesData.add({
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'phase': phaseName,
+      'targetBPM': targetPitch > 0 ? targetPitch : 0.0,
+      'currentSPM': _displaySpm > 0 ? _displaySpm : 0.0,
+      'phaseStableSeconds': phaseStableSeconds,
+      'pitchIncreaseCount': pitchIncreaseCount,
+      'isPlaying': isPlaying,
+      'remainingSeconds': remainingSeconds,
+    });
+
+    print('時系列データを記録: ${realExperimentTimeSeriesData.length}件目, '
+        'フェーズ=$phaseName, '
+        'ターゲットBPM=${targetPitch > 0 ? targetPitch.toStringAsFixed(1) : "N/A"}, '
+        '現在SPM=${_displaySpm > 0 ? _displaySpm.toStringAsFixed(1) : "N/A"}');
+  }
+
+  // 本実験データをCSV形式で保存してAzureにアップロードする
+  Future<void> _saveAndUploadRealExperimentData() async {
+    try {
+      // ファイル名を設定
+      final fileName =
+          'real_experiment_${subjectId.isEmpty ? 'unknown' : subjectId}_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}';
+
+      // 最大のピッチ増加回数を記録（最大到達BPM）
+      final maxReachedBpm = pitchIncreaseCount > 0
+          ? baseWalkingPitch + (pitchIncreaseCount * pitchIncrementStep)
+          : baseWalkingPitch;
+
+      // 1. 要約データをファイルに保存
+      List<List<dynamic>> summaryData = [
+        [
+          '実験日時',
+          '被験者ID',
+          '基準ピッチ(BPM)',
+          '最大到達ピッチ(BPM)',
+          'ピッチ増加回数',
+          'ピッチ増加ステップ(BPM)',
+          '実験継続時間(秒)',
+          '各ピッチ維持時間(秒)',
+          '記録データ数'
+        ],
+        [
+          DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+          subjectId.isEmpty ? 'unknown' : subjectId,
+          baseWalkingPitch.toStringAsFixed(1),
+          maxReachedBpm.toStringAsFixed(1),
+          pitchIncreaseCount,
+          pitchIncrementStep.toStringAsFixed(1),
+          phaseStartTime != null
+              ? DateTime.now().difference(phaseStartTime!).inSeconds
+              : 0,
+          stableThresholdSeconds,
+          realExperimentTimeSeriesData.length
+        ]
+      ];
+
+      // 要約CSVに変換
+      String summaryCsv = const ListToCsvConverter().convert(summaryData);
+
+      // 要約ファイルに保存
+      final directory = await getApplicationDocumentsDirectory();
+      final summaryPath = '${directory.path}/${fileName}_summary.csv';
+      final summaryFile = File(summaryPath);
+      await summaryFile.writeAsString(summaryCsv);
+      print('本実験要約データをファイルに保存しました: $summaryPath');
+
+      // 2. 時系列データをファイルに保存
+      if (realExperimentTimeSeriesData.isEmpty) {
+        print('時系列データが空です');
+        return;
+      }
+
+      // 時系列データのCSVヘッダー
+      List<List<dynamic>> timeSeriesCSV = [];
+
+      // ヘッダー行
+      timeSeriesCSV.add([
+        'タイムスタンプ',
+        '経過時間(秒)',
+        'フェーズ',
+        '目標テンポ(BPM)',
+        '歩行ピッチ(SPM)',
+        '安定時間(秒)',
+        'ピッチ増加回数',
+        '音楽再生中',
+      ]);
+
+      // 最初のタイムスタンプを基準にする
+      int firstTimestamp = realExperimentTimeSeriesData.first['timestamp'];
+
+      // データ行を追加
+      for (var dataPoint in realExperimentTimeSeriesData) {
+        int timestamp = dataPoint['timestamp'];
+        double elapsedSeconds = (timestamp - firstTimestamp) / 1000.0;
+
+        timeSeriesCSV.add([
+          DateFormat('yyyy-MM-dd HH:mm:ss.SSS')
+              .format(DateTime.fromMillisecondsSinceEpoch(timestamp)),
+          elapsedSeconds.toStringAsFixed(1),
+          dataPoint['phase'],
+          dataPoint['targetBPM'].toStringAsFixed(1),
+          dataPoint['currentSPM'].toStringAsFixed(1),
+          dataPoint['phaseStableSeconds'],
+          dataPoint['pitchIncreaseCount'],
+          dataPoint['isPlaying'] ? '再生中' : '停止中',
+        ]);
+      }
+
+      // 時系列CSVに変換
+      String timeSeriesCsv = const ListToCsvConverter().convert(timeSeriesCSV);
+
+      // 時系列ファイルに保存
+      final timeSeriesPath = '${directory.path}/${fileName}_timeseries.csv';
+      final timeSeriesFile = File(timeSeriesPath);
+      await timeSeriesFile.writeAsString(timeSeriesCsv);
+      print('本実験時系列データをファイルに保存しました: $timeSeriesPath');
+
+      // 3. Azureにアップロード
+      try {
+        // 要約データをアップロード
+        String originalFileName = experimentFileName;
+        experimentFileName = '${fileName}_summary';
+        await _uploadDataToAzure(summaryCsv);
+
+        // 時系列データをアップロード
+        experimentFileName = '${fileName}_timeseries';
+        await _uploadDataToAzure(timeSeriesCsv);
+
+        // 元のファイル名を復元
+        experimentFileName = originalFileName;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('本実験データがAzureにアップロードされました'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      } catch (e) {
+        print('Azure本実験データアップロードエラー: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Azureへのアップロードに失敗しました: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      print('本実験データの保存エラー: $e');
+    }
   }
 
   // 実験フェーズを更新する
@@ -1767,9 +1946,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         style: TextStyle(fontWeight: FontWeight.bold)),
                     Slider(
                       value: tempPitchIncrementStep,
-                      min: 2.5,
+                      min: 1.0,
                       max: 10,
-                      divisions: 3,
+                      divisions: 9,
                       label: '${tempPitchIncrementStep.toStringAsFixed(1)} BPM',
                       onChanged: (value) {
                         setState(() {
