@@ -145,15 +145,25 @@ class Metronome {
 
   /// 高精度タイマーを開始する
   void _startHighPrecisionTimer() {
-    // タイマー間隔を少し短くして、処理遅延を吸収しやすくする
-    _timer = Timer.periodic(const Duration(milliseconds: 5), (timer) {
+    // タイマー間隔を非常に短く設定して高い精度を実現
+    const tickInterval = Duration(milliseconds: 1);
+
+    // まず直前のタイマーをキャンセル
+    _timer?.cancel();
+
+    _timer = Timer.periodic(tickInterval, (timer) {
       if (!_isPlaying) {
         timer.cancel();
         return;
       }
 
+      // 次のビートのタイミングをチェックして再生
       _checkAndPlayNextBeat();
     });
+
+    // 開始ログ
+    print(
+        '高精度タイマー開始 - 間隔: ${tickInterval.inMilliseconds}ms, BPM: $_currentBpm');
   }
 
   /// 次の拍を再生するタイミングかチェックし、適切なタイミングで再生
@@ -164,43 +174,52 @@ class Metronome {
     final double intervalMillisecondsDouble = 60000.0 / _currentBpm;
     final int intervalMilliseconds = intervalMillisecondsDouble.round();
 
-    // 次の拍の正確な目標時刻を計算
-    // _lastBeatTimeにintervalMillisecondsを足していく方式に変更
-    // これにより、累積誤差を防ぐ
-    int expectedBeatTimeMillis = _lastBeatTime!.millisecondsSinceEpoch +
-        ((_beatCount + 1) * intervalMillisecondsDouble).round();
+    // 最初の拍の場合は、開始時刻を基準にする
+    if (_beatCount == 0) {
+      // 最初の拍は既に鳴らしているので、次の拍の時刻を計算
+      final nextBeatTime =
+          _lastBeatTime!.add(Duration(milliseconds: intervalMilliseconds));
 
-    // 現在時刻が次の拍の目標時刻を過ぎているかチェック
-    if (now.millisecondsSinceEpoch >= expectedBeatTimeMillis) {
-      // 再生処理が実行中ならスキップ（多重再生防止）
-      if (_isProcessingBeat) {
-        print("警告: 前回の再生処理が完了していないため、今回の拍をスキップします。");
-        return;
+      // 次の拍の時刻になったら再生
+      if (now.isAfter(nextBeatTime)) {
+        // 拍カウントを更新
+        _beatCount++;
+
+        // 基準時刻を更新（累積誤差を防ぐため、理論上の時刻を使用）
+        _lastBeatTime =
+            _lastBeatTime!.add(Duration(milliseconds: intervalMilliseconds));
+
+        // ビートを再生
+        _playBeat();
       }
-      _isProcessingBeat = true;
+    } else {
+      // 2回目以降の拍の場合
 
-      // 拍カウントを更新
-      _beatCount++;
+      // 次の拍の理論上の時刻を計算（累積誤差を防ぐ）
+      final nextBeatTime =
+          _lastBeatTime!.add(Duration(milliseconds: intervalMilliseconds));
 
-      // 次の再生時刻の基準となる_lastBeatTimeを更新するのではなく、
-      // 計算上の理想時刻(expectedBeatTimeMillis)を次の計算に使用することで精度を保つ
-      // _lastBeatTime = now; // この行は不要になるか、別の意味で使う
+      // 現在時刻が次の拍の時刻を過ぎているかチェック
+      if (now.isAfter(nextBeatTime)) {
+        if (_isProcessingBeat) {
+          // 既に処理中なら待機（多重再生防止）
+          return;
+        }
 
-      // 非同期で拍を再生（UIスレッドをブロックしない）
-      _playBeat().whenComplete(() {
-        _isProcessingBeat = false; // 再生完了後にフラグを解除
-      });
+        _isProcessingBeat = true;
 
-      // _lastBeatTime を次のインターバルの基準として更新（必要に応じて）
-      // または、_beatCount と最初の _lastBeatTime から計算し続ける
-      // ここでは、累積誤差を防ぐため、最初の開始時刻を基準に計算するアプローチが有効
+        // 拍カウントを更新
+        _beatCount++;
+
+        // 基準時刻を更新（累積誤差を防ぐため、理論上の時刻を使用）
+        _lastBeatTime = nextBeatTime;
+
+        // 非同期で拍を再生
+        _playBeat().whenComplete(() {
+          _isProcessingBeat = false; // 処理完了フラグを解除
+        });
+      }
     }
-
-    // タイマーの精度向上のため、予定時刻に近づいたらより高頻度でチェックする（オプション）
-    // final int timeUntilNextBeat = expectedBeatTimeMillis - now.millisecondsSinceEpoch;
-    // if (timeUntilNextBeat > 0 && timeUntilNextBeat < 20) {
-    //   // さらに短い間隔でタイマーを一時的に設定するなど
-    // }
   }
 
   /// クリック音を再生する
@@ -208,21 +227,23 @@ class Metronome {
     if (!_isPlaying) return;
 
     try {
+      // バイブレーションと音声を同時に開始するために並列処理
+      final List<Future<void>> tasks = [];
+
       // バイブレーション
       if (_shouldVibrate) {
-        HapticFeedback.mediumImpact();
+        tasks.add(HapticFeedback.mediumImpact());
       }
 
-      // 音声再生
-      // seek(Duration.zero) は再生の度にオーバーヘッドがあるため、
-      // 再生が完了するのを待つか、play()の完了を待つ方が良い場合がある
-      // await _audioPlayer.seek(Duration.zero);
-      await _audioPlayer.play();
+      // 音声再生 - 必ず位置をリセットしてから再生
+      tasks.add(_audioPlayer.seek(Duration.zero));
+      tasks.add(_audioPlayer.play());
 
-      // 再生が終わるまで待つか、すぐに次の処理に進むか
-      // JustAudio は play() が完了したら再生開始を意味するので、
-      // seek(0) -> play() で十分な場合が多い。
-      // 必要であれば、再生完了を listen する。
+      // 全てのタスクを並列実行
+      await Future.wait(tasks);
+
+      // 音が確実に鳴るようにデバッグ出力を追加
+      print("メトロノーム: ビート再生 - BPM: $_currentBpm");
     } catch (e) {
       print("音声再生エラー: $e");
       // エラー発生時もフラグを確実に解除

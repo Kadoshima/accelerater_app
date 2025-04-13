@@ -20,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'models/sensor_data.dart';
 import 'utils/gait_analysis_service.dart'; // 新しいサービスをインポート
 import 'services/metronome.dart'; // メトロノームサービス
+import 'services/native_metronome.dart'; // ネイティブメトロノームサービス
 import 'services/background_service.dart'; // バックグラウンドサービス
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
@@ -174,9 +175,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // メトロノーム関連
   late Metronome _metronome;
+  late NativeMetronome _nativeMetronome; // ネイティブメトロノームの追加
+  bool _useNativeMetronome = true; // ネイティブメトロノームを使用するフラグ
   bool useVibration = true; // バイブレーション機能の有効/無効フラグ
-  bool get isPlaying => _metronome.isPlaying;
-  double get currentMusicBPM => _metronome.currentBpm;
+
+  // メトロノームのゲッター（ネイティブかDartかを抽象化）
+  bool get isPlaying =>
+      _useNativeMetronome ? _nativeMetronome.isPlaying : _metronome.isPlaying;
+  double get currentMusicBPM =>
+      _useNativeMetronome ? _nativeMetronome.currentBpm : _metronome.currentBpm;
+
   MusicTempo? selectedTempo;
   // メトロノーム操作用テンポリスト (80から10ずつ増加)
   final List<MusicTempo> metronomeTempoPresets = [
@@ -393,23 +401,15 @@ class _BLEHomePageState extends State<BLEHomePage> {
       gaitAnalysisService =
           GaitAnalysisService(); // 新しいアルゴリズムではsamplingRateが不要になりました
 
-      // メトロノームサービスの初期化
-      _metronome = Metronome(); // Metronomeインスタンスを作成
-      await _metronome.initialize();
-
-      // バイブレーション設定を反映
-      _metronome.setVibration(useVibration);
-
-      // メトロノームのデフォルトテンポを80BPMに設定
-      selectedTempo = metronomeTempoPresets[0]; // デフォルト80 BPM
-      _metronome.changeTempo(selectedTempo!.bpm);
+      // メトロノームサービスの初期化（改善版）
+      await _initializeMetronomes();
 
       // Bluetoothも初期化
       await _initBluetooth();
 
       setState(() {}); // UI更新
     } catch (e) {
-      print('メトロノーム初期化エラー: $e');
+      print('初期化エラー: $e');
     }
   }
 
@@ -419,20 +419,52 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 音楽の再生/一時停止を切り替える
   Future<void> _togglePlayback() async {
     try {
-      if (_metronome.isPlaying) {
-        await _metronome.stop();
-        if (isRecording && experimentTimer != null) {
-          experimentTimer!.cancel();
-          experimentTimer = null;
+      if (_useNativeMetronome) {
+        try {
+          if (_nativeMetronome.isPlaying) {
+            await _nativeMetronome.stop();
+            if (isRecording && experimentTimer != null) {
+              experimentTimer!.cancel();
+              experimentTimer = null;
+            }
+          } else {
+            await _nativeMetronome.start(bpm: currentMusicBPM);
+            if (isExperimentMode && isRecording) {
+              _startExperiment();
+            }
+          }
+        } catch (e) {
+          // ネイティブメトロノームでエラーが発生した場合、Dartメトロノームに切り替え
+          print('ネイティブメトロノーム操作エラー: $e');
+          setState(() {
+            _useNativeMetronome = false;
+          });
+          // Dartメトロノームで再度試行
+          if (_metronome.isPlaying) {
+            await _metronome.stop();
+          } else {
+            await _metronome.start(bpm: currentMusicBPM);
+            if (isExperimentMode && isRecording) {
+              _startExperiment();
+            }
+          }
         }
       } else {
-        await _metronome.start(bpm: currentMusicBPM);
-        if (isExperimentMode && isRecording) {
-          _startExperiment();
+        if (_metronome.isPlaying) {
+          await _metronome.stop();
+          if (isRecording && experimentTimer != null) {
+            experimentTimer!.cancel();
+            experimentTimer = null;
+          }
+        } else {
+          await _metronome.start(bpm: currentMusicBPM);
+          if (isExperimentMode && isRecording) {
+            _startExperiment();
+          }
         }
       }
-      // isPlaying は Metronome の状態に依存するため、ここでsetStateを呼ぶ必要は基本ないが、
-      // ボタン表示の更新のためには必要。
+
+      // ボタン表示の更新のため、setState呼び出し
       if (mounted) {
         setState(() {});
       }
@@ -444,7 +476,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // テンポを変更する
   Future<void> _changeTempo(MusicTempo tempo) async {
     try {
-      await _metronome.changeTempo(tempo.bpm);
+      if (_useNativeMetronome) {
+        try {
+          await _nativeMetronome.changeTempo(tempo.bpm);
+        } catch (e) {
+          // ネイティブメトロノームでエラーが発生した場合、Dartメトロノームに切り替え
+          print('ネイティブメトロノームテンポ変更エラー: $e');
+          setState(() {
+            _useNativeMetronome = false;
+          });
+          // Dartメトロノームで再度試行
+          await _metronome.changeTempo(tempo.bpm);
+        }
+      } else {
+        await _metronome.changeTempo(tempo.bpm);
+      }
+
       // 適切なリストから一致するBPMを持つテンポを探す
       MusicTempo? matchedTempo;
 
@@ -480,7 +527,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 任意のBPM値に音楽テンポを変更する
   Future<void> _changeMusicTempo(double bpm) async {
     try {
-      await _metronome.changeTempo(bpm);
+      if (_useNativeMetronome) {
+        try {
+          await _nativeMetronome.changeTempo(bpm);
+        } catch (e) {
+          // ネイティブメトロノームでエラーが発生した場合、Dartメトロノームに切り替え
+          print('ネイティブメトロノームテンポ変更エラー: $e');
+          setState(() {
+            _useNativeMetronome = false;
+          });
+          // Dartメトロノームで再度試行
+          await _metronome.changeTempo(bpm);
+        }
+      } else {
+        await _metronome.changeTempo(bpm);
+      }
+
       if (mounted) {
         setState(() {
           // 既存のmetronomeTempoPresetsから最も近いものを選択し、
@@ -3062,7 +3124,39 @@ class _BLEHomePageState extends State<BLEHomePage> {
                               horizontal: 30, vertical: 10),
                         ),
                       ),
-                    )
+                    ),
+                    // メトロノームモード切り替えスイッチを追加
+                    const SizedBox(height: 10),
+                    if (Platform.isAndroid) // Androidの場合のみ表示
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text('メトロノームモード:'),
+                          const SizedBox(width: 10),
+                          Switch(
+                            value: _useNativeMetronome,
+                            onChanged: isPlaying
+                                ? null // 再生中は変更不可
+                                : (bool value) {
+                                    setState(() {
+                                      _useNativeMetronome = value;
+                                      print(
+                                          'メトロノームモード切替: ${value ? "ネイティブ" : "Dart"}');
+                                    });
+                                  },
+                            activeColor: Colors.blue,
+                          ),
+                          Text(
+                            _useNativeMetronome ? 'ネイティブ' : 'Dart',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: _useNativeMetronome
+                                  ? Colors.blue
+                                  : Colors.orange,
+                            ),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
               ),
@@ -4481,5 +4575,95 @@ class _BLEHomePageState extends State<BLEHomePage> {
         _stopRealExperiment();
       }
     });
+  }
+
+  // メトロノームの初期化処理
+  Future<void> _initializeMetronomes() async {
+    // メトロノームインスタンスを作成
+    _metronome = Metronome();
+    _nativeMetronome = NativeMetronome();
+
+    // プラットフォームを確認
+    String platform = Platform.isIOS
+        ? 'iOS'
+        : Platform.isAndroid
+            ? 'Android'
+            : '不明';
+    print('現在のプラットフォーム: $platform');
+
+    // iOS/Androidともにネイティブメトロノームを使用
+    print('メトロノームモード初期設定: ${_useNativeMetronome ? "ネイティブ" : "Dart"}');
+
+    // Dartメトロノームの初期化（必ず成功するはず）
+    try {
+      await _metronome.initialize();
+      print('Dartメトロノーム初期化完了');
+    } catch (e) {
+      print('Dartメトロノーム初期化エラー: $e');
+      // エラーが発生しても続行する（クリティカルではない）
+    }
+
+    // ネイティブメトロノームの初期化（失敗する可能性あり）
+    bool nativeSuccess = false;
+    try {
+      print('ネイティブメトロノーム初期化開始...');
+      await _nativeMetronome.initialize();
+      print('ネイティブメトロノーム初期化完了 ✓');
+      nativeSuccess = true;
+    } catch (e) {
+      // ネイティブメトロノームの初期化に失敗した場合
+      print('ネイティブメトロノーム初期化エラー: $e');
+      print('Dartメトロノームモードに自動切り替えします');
+      if (mounted) {
+        setState(() {
+          _useNativeMetronome = false;
+        });
+      }
+      // エラー通知
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('ネイティブメトロノームを使用できません。Dartモードで動作します。'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      });
+    }
+
+    // バイブレーション設定を反映
+    _metronome.setVibration(useVibration);
+    if (nativeSuccess) {
+      try {
+        await _nativeMetronome.setVibration(useVibration);
+      } catch (e) {
+        print('ネイティブバイブレーション設定エラー: $e');
+      }
+    }
+
+    // テンポ設定
+    if (selectedTempo != null) {
+      _metronome.changeTempo(selectedTempo!.bpm);
+      if (nativeSuccess) {
+        try {
+          await _nativeMetronome.changeTempo(selectedTempo!.bpm);
+        } catch (e) {
+          print('ネイティブテンポ設定エラー: $e');
+        }
+      }
+    } else {
+      // デフォルトテンポを設定
+      selectedTempo = metronomeTempoPresets[0]; // 80 BPM
+      _metronome.changeTempo(selectedTempo!.bpm);
+      if (nativeSuccess) {
+        try {
+          await _nativeMetronome.changeTempo(selectedTempo!.bpm);
+        } catch (e) {
+          print('ネイティブデフォルトテンポ設定エラー: $e');
+        }
+      }
+    }
   }
 }
