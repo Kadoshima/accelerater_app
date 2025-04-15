@@ -3,16 +3,15 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // flutter_blue_plus�
 import 'dart:async'; // Streamの取り扱いに必要
 import 'dart:io';
 import 'dart:convert'; // jsonDecodeで使用するため、これは残す
-import 'dart:typed_data'; // Uint8List用に追加
+// Uint8List用に追加
 import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'dart:math' as math; // Mathクラスを使うためにインポート（as mathで修飾）
-import 'package:azblob/azblob.dart' as azblob; // Azure Blob Storage
+// Azure Blob Storage
 import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 import 'package:http/http.dart' as http;
-import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart'; // 位置情報を取得するためのパッケージ
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -236,7 +235,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   int freeWalkingDurationSeconds = 120; // 自由歩行フェーズの期間 (2分)
   int stableThresholdSeconds = 60; // 安定とみなす秒数 (1分)
   double pitchDifferenceThreshold = 10.0; // ピッチ差の閾値
-  double pitchIncrementStep = 2.0; // ピッチ増加ステップ
+  double pitchIncrementStep = 5.0; // ピッチ増加ステップ
 
   // 歩行解析サービス
   late final GaitAnalysisService gaitAnalysisService;
