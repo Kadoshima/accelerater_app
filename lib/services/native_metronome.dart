@@ -34,15 +34,16 @@ class NativeMetronome {
   }
 
   /// メトロノームを初期化する
-  Future<void> initialize() async {
-    if (_isInitialized) return; // 既に初期化済みならスキップ
+  Future<bool> initialize() async {
+    if (_isInitialized) return true; // 既に初期化済みならスキップ
 
     try {
       print('ネイティブメトロノーム初期化開始');
-      await _channel.invokeMethod('initialize');
-      _isInitialized = true;
+      final bool result = await _channel.invokeMethod('initialize');
+      _isInitialized = result;
       _isPluginAvailable = true;
       print('ネイティブメトロノーム初期化メソッド呼び出し完了');
+      return result;
     } catch (e) {
       print('ネイティブメトロノーム初期化例外: $e');
       // MissingPluginExceptionの場合は明示的に例外をスロー
@@ -57,8 +58,8 @@ class NativeMetronome {
   }
 
   /// 指定されたBPMでメトロノームを開始する
-  Future<void> start({double? bpm}) async {
-    if (_isPlaying) return;
+  Future<bool> start({double? bpm}) async {
+    if (_isPlaying) return true;
 
     if (bpm != null) {
       _currentBpm = bpm;
@@ -68,20 +69,21 @@ class NativeMetronome {
       print('警告: プラグインが利用できないため、操作をスキップします');
       // UI更新のために状態だけ変更
       _isPlaying = true;
-      return;
+      return true;
     }
 
     try {
       print('ネイティブメトロノーム開始');
-      final result = await _channel.invokeMethod('start', {
+      final bool result = await _channel.invokeMethod('start', {
         'bpm': _currentBpm,
       });
 
-      if (result == true) {
+      if (result) {
         _isPlaying = true;
         debugPrint('ネイティブメトロノーム開始: $_currentBpm BPM');
         print('ネイティブメトロノーム開始メソッド呼び出し完了');
       }
+      return result;
     } catch (e) {
       print('ネイティブメトロノーム開始例外: $e');
       // MissingPluginExceptionの場合は警告のみ出して状態更新
@@ -89,31 +91,32 @@ class NativeMetronome {
         print('警告: ネイティブプラグインが見つからないため、代替処理を行います');
         _isPluginAvailable = false;
         _isPlaying = true; // UI更新のために状態を更新
-        return;
+        return true;
       }
       throw Exception('ネイティブメトロノームの開始に失敗しました: $e');
     }
   }
 
   /// メトロノームを停止する
-  Future<void> stop() async {
-    if (!_isPlaying) return;
+  Future<bool> stop() async {
+    if (!_isPlaying) return true;
 
     if (!_isPluginAvailable) {
       print('警告: プラグインが利用できないため、操作をスキップします');
       // UI更新のために状態だけ変更
       _isPlaying = false;
-      return;
+      return true;
     }
 
     try {
       print('ネイティブメトロノーム停止');
-      final result = await _channel.invokeMethod('stop');
-      if (result == true) {
+      final bool result = await _channel.invokeMethod('stop');
+      if (result) {
         _isPlaying = false;
         debugPrint('ネイティブメトロノーム停止');
         print('ネイティブメトロノーム停止メソッド呼び出し完了');
       }
+      return result;
     } catch (e) {
       print('ネイティブメトロノーム停止例外: $e');
       // MissingPluginExceptionの場合は警告のみ出して状態更新
@@ -121,15 +124,15 @@ class NativeMetronome {
         print('警告: ネイティブプラグインが見つからないため、ローカルのみ状態更新します');
         _isPluginAvailable = false;
         _isPlaying = false; // UI更新のために状態を更新
-        return;
+        return true;
       }
       throw Exception('ネイティブメトロノームの停止に失敗しました: $e');
     }
   }
 
   /// メトロノームのテンポ（BPM）を変更する
-  Future<void> changeTempo(double newBpm) async {
-    if (newBpm <= 0) return;
+  Future<bool> changeTempo(double newBpm) async {
+    if (newBpm <= 0) return false;
 
     // 精度を確保するため、小数点以下第一位までに丸める（0.1単位）
     newBpm = (newBpm * 10).round() / 10;
@@ -137,26 +140,44 @@ class NativeMetronome {
 
     if (!_isPluginAvailable) {
       print('警告: プラグインが利用できないため、操作をスキップします');
-      return;
+      return false;
     }
 
     if (_isPlaying) {
       try {
         print('ネイティブメトロノームテンポ変更: $newBpm BPM');
-        await _channel.invokeMethod('setTempo', {
+        final bool result = await _channel.invokeMethod('setTempo', {
           'bpm': _currentBpm,
         });
         print('ネイティブメトロノームテンポ変更メソッド呼び出し完了');
+        return result;
       } catch (e) {
         print('ネイティブメトロノームテンポ変更例外: $e');
         // MissingPluginExceptionの場合は警告のみ出して継続
         if (e.toString().contains('MissingPluginException')) {
           print('警告: ネイティブプラグインが見つからないため、ローカルの設定のみ更新します');
           _isPluginAvailable = false;
-          return;
+          return false;
         }
         throw Exception('ネイティブメトロノームのテンポ変更に失敗しました: $e');
       }
+    }
+    return false;
+  }
+
+  /// バイブレーション設定を変更
+  Future<bool> setVibration(bool useVibration) async {
+    if (!_isInitialized) {
+      return false;
+    }
+
+    try {
+      final bool result = await _channel
+          .invokeMethod('setVibration', {'useVibration': useVibration});
+      return result;
+    } catch (e) {
+      print('ネイティブバイブレーション設定エラー: $e');
+      rethrow;
     }
   }
 

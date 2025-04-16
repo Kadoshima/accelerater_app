@@ -7,6 +7,7 @@ import AudioToolbox
     private var channel: FlutterMethodChannel!
     private var isPlaying = false
     private var currentBpm: Double = 100.0
+    private var useVibration = false // バイブレーション設定を保持する変数を追加
     
     // オーディオエンジン関連
     private var audioEngine: AVAudioEngine?
@@ -76,6 +77,14 @@ import AudioToolbox
             }
             setTempo(bpm: bpm)
             result(true)
+        case "setVibration":
+            guard let args = call.arguments as? [String: Any],
+                  let enabled = args["useVibration"] as? Bool else {
+                result(FlutterError(code: "INVALID_ARGS", message: "Invalid arguments", details: nil))
+                return
+            }
+            setVibration(enabled: enabled)
+            result(true)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -127,6 +136,13 @@ import AudioToolbox
                     if self.sampleTime >= self.nextBeatSampleTime {
                         // 次の拍のタイミングを設定
                         self.nextBeatSampleTime += self.beatIntervalSamples
+                        
+                        // バイブレーション設定が有効であれば実行
+                        if self.useVibration {
+                            DispatchQueue.main.async {
+                                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                            }
+                        }
                         
                         // メトロノーム拍をFlutterに通知（負荷が大きいのでメインスレッドで実行）
                         DispatchQueue.main.async {
@@ -243,6 +259,11 @@ import AudioToolbox
         mutex.unlock()
         
         NSLog("Tempo changed with high precision: \(bpm) BPM, interval: \(beatIntervalSamples) samples")
+    }
+    
+    private func setVibration(enabled: Bool) {
+        useVibration = enabled
+        NSLog("Vibration setting changed: \(enabled)")
     }
     
     private func configureAudioSession() {

@@ -21,6 +21,7 @@ import 'utils/gait_analysis_service.dart'; // 新しいサービスをインポ�
 import 'services/metronome.dart'; // メトロノームサービス
 import 'services/native_metronome.dart'; // ネイティブメトロノームサービス
 import 'services/background_service.dart'; // バックグラウンドサービス
+import 'screens/experiment_screen.dart'; // 新しい実験画面
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
 enum ExperimentPhase {
@@ -1101,8 +1102,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('HealthCore M5 - 歩行測定'),
-        backgroundColor: Colors.blueGrey.shade800,
+        title: const Text('Gait Analysis App'),
+        backgroundColor: Colors.blue,
         actions: [
           // 被験者IDが設定されている場合は表示
           if (subjectId.isNotEmpty)
@@ -1123,6 +1124,25 @@ class _BLEHomePageState extends State<BLEHomePage> {
             icon: const Icon(Icons.person),
             tooltip: '被験者IDを設定',
             onPressed: _showSubjectIdDialog,
+          ),
+
+          // 新しい実験画面へのボタンを追加
+          IconButton(
+            icon: const Icon(Icons.science),
+            tooltip: '新実験モード',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ExperimentScreen(
+                    gaitAnalysisService: gaitAnalysisService,
+                    metronome: _metronome,
+                    nativeMetronome: _nativeMetronome,
+                    useNativeMetronome: _useNativeMetronome,
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),

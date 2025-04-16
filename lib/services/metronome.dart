@@ -3,6 +3,8 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:vibration/vibration.dart';
+import 'package:flutter/services.dart';
 
 /// メトロノーム機能を提供するクラス（波形生成バージョン）
 class Metronome {
@@ -29,8 +31,11 @@ class Metronome {
   bool _isProcessingBeat = false;
   final List<Future<void> Function()> _pendingOperations = [];
 
+  bool _useVibration = false; // バイブレーション使用フラグ
+
   bool get isPlaying => _isPlaying;
   double get currentBpm => _currentBpm;
+  bool get useVibration => _useVibration;
 
   /// メトロノームを初期化する
   Future<void> initialize() async {
@@ -231,6 +236,13 @@ class Metronome {
 
       // 音が確実に鳴るようにデバッグ出力を追加
       print("メトロノーム: ビート再生 - BPM: $_currentBpm");
+
+      if (_useVibration) {
+        // バイブレーション機能を使用
+        if (await Vibration.hasVibrator() ?? false) {
+          Vibration.vibrate(duration: 50);
+        }
+      }
     } catch (e) {
       print("音声再生エラー: $e");
       // エラー発生時もフラグを確実に解除
@@ -315,6 +327,12 @@ class Metronome {
   void dispose() {
     _timer?.cancel();
     _audioPlayer.dispose();
+  }
+
+  /// バイブレーション設定を変更
+  void setVibration(bool useVibration) {
+    _useVibration = useVibration;
+    debugPrint('メトロノーム: バイブレーション設定を ${useVibration ? "有効" : "無効"} に変更しました');
   }
 }
 
