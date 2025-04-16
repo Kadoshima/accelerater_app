@@ -20,7 +20,6 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     private lateinit var context: Context
     private var isPlaying = false
     private var currentBpm = 100.0
-    private var shouldVibrate = true
     
     // オーディオ関連
     private var audioTrack: AudioTrack? = null
@@ -41,9 +40,6 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     private val clickDurationMs = 25
     private val frequency = 900.0 // Hz
     private val amplitude = 0.8
-    
-    // バイブレーター
-    private var vibrator: Vibrator? = null
     
     // ビートスケジューラー
     private val beatScheduler = object : Runnable {
@@ -92,15 +88,6 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
         
         Log.d("NativeMetronomePlugin", "Plugin attached to engine with context: $context")
         
-        // バイブレーターの初期化
-        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            vibratorManager.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-        }
-        
         // 音声の初期化（必要に応じて）
         initializeAudio()
     }
@@ -118,8 +105,7 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
             }
             "start" -> {
                 val bpm = call.argument<Double>("bpm") ?: 100.0
-                val vibrate = call.argument<Boolean>("vibrate") ?: true
-                startMetronome(bpm, vibrate)
+                startMetronome(bpm)
                 result.success(true)
             }
             "stop" -> {
@@ -129,11 +115,6 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
             "setTempo" -> {
                 val bpm = call.argument<Double>("bpm") ?: 100.0
                 setTempo(bpm)
-                result.success(true)
-            }
-            "setVibration" -> {
-                val enabled = call.argument<Boolean>("enabled") ?: true
-                shouldVibrate = enabled
                 result.success(true)
             }
             else -> {
@@ -167,11 +148,10 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
         }
     }
     
-    private fun startMetronome(bpm: Double, vibrate: Boolean) {
+    private fun startMetronome(bpm: Double) {
         if (isPlaying) return
         
         currentBpm = bpm
-        shouldVibrate = vibrate
         isPlaying = true
         beatCount = 0
         
@@ -201,16 +181,6 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     
     private fun playBeat() {
         try {
-            // バイブレーション
-            if (shouldVibrate && vibrator?.hasVibrator() == true) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator?.vibrate(VibrationEffect.createOneShot(15, VibrationEffect.DEFAULT_AMPLITUDE))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator?.vibrate(15)
-                }
-            }
-            
             // オーディオ再生
             audioTrack?.let { track ->
                 track.stop()

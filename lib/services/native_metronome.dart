@@ -9,7 +9,6 @@ class NativeMetronome {
 
   bool _isPlaying = false;
   double _currentBpm = 100.0;
-  bool _shouldVibrate = true;
   bool _isInitialized = false; // 初期化状態を管理
   bool _isPluginAvailable = true; // プラグインが利用可能かを管理
 
@@ -76,7 +75,6 @@ class NativeMetronome {
       print('ネイティブメトロノーム開始');
       final result = await _channel.invokeMethod('start', {
         'bpm': _currentBpm,
-        'vibrate': _shouldVibrate,
       });
 
       if (result == true) {
@@ -162,34 +160,6 @@ class NativeMetronome {
     }
   }
 
-  /// バイブレーション機能の有効/無効を切り替える
-  Future<void> setVibration(bool enabled) async {
-    _shouldVibrate = enabled;
-
-    if (!_isPluginAvailable) {
-      print('警告: プラグインが利用できないため、操作をスキップします');
-      return;
-    }
-
-    try {
-      print('ネイティブメトロノーム振動設定: $enabled');
-      await _channel.invokeMethod('setVibration', {
-        'enabled': enabled,
-      });
-      print('ネイティブメトロノーム振動設定メソッド呼び出し完了');
-    } catch (e) {
-      print('ネイティブメトロノーム振動設定例外: $e');
-      // MissingPluginExceptionの場合は、Flutterアプリ内で状態を更新するだけにし、
-      // 例外をスローしない（アプリの動作を継続させる）
-      if (e.toString().contains('MissingPluginException')) {
-        print('プラグインが見つからないため、ローカルの設定のみ更新します');
-        _isPluginAvailable = false;
-        return; // 例外をスローせずに処理を終了
-      }
-      throw Exception('ネイティブメトロノームの振動設定に失敗しました: $e');
-    }
-  }
-
   /// リソースを解放する
   void dispose() {
     if (_isPlaying) {
@@ -201,6 +171,5 @@ class NativeMetronome {
   // 現在の状態を取得するためのゲッター
   bool get isPlaying => _isPlaying;
   double get currentBpm => _currentBpm;
-  bool get vibrationEnabled => _shouldVibrate;
   bool get isPluginAvailable => _isPluginAvailable;
 }

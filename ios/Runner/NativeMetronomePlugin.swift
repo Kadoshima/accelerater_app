@@ -7,7 +7,6 @@ import AudioToolbox
     private var channel: FlutterMethodChannel!
     private var isPlaying = false
     private var currentBpm: Double = 100.0
-    private var shouldVibrate = true
     
     // オーディオエンジン関連
     private var audioEngine: AVAudioEngine?
@@ -60,12 +59,11 @@ import AudioToolbox
             result(true)
         case "start":
             guard let args = call.arguments as? [String: Any],
-                  let bpm = args["bpm"] as? Double,
-                  let vibrate = args["vibrate"] as? Bool else {
+                  let bpm = args["bpm"] as? Double else {
                 result(FlutterError(code: "INVALID_ARGS", message: "Invalid arguments", details: nil))
                 return
             }
-            startMetronome(bpm: bpm, vibrate: vibrate)
+            startMetronome(bpm: bpm)
             result(true)
         case "stop":
             stopMetronome()
@@ -77,14 +75,6 @@ import AudioToolbox
                 return
             }
             setTempo(bpm: bpm)
-            result(true)
-        case "setVibration":
-            guard let args = call.arguments as? [String: Any],
-                  let enabled = args["enabled"] as? Bool else {
-                result(FlutterError(code: "INVALID_ARGS", message: "Invalid arguments", details: nil))
-                return
-            }
-            shouldVibrate = enabled
             result(true)
         default:
             result(FlutterMethodNotImplemented)
@@ -137,13 +127,6 @@ import AudioToolbox
                     if self.sampleTime >= self.nextBeatSampleTime {
                         // 次の拍のタイミングを設定
                         self.nextBeatSampleTime += self.beatIntervalSamples
-                        
-                        // ビブレーションが有効ならメインスレッドで実行
-                        if self.shouldVibrate {
-                            DispatchQueue.main.async {
-                                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-                            }
-                        }
                         
                         // メトロノーム拍をFlutterに通知（負荷が大きいのでメインスレッドで実行）
                         DispatchQueue.main.async {
@@ -216,14 +199,13 @@ import AudioToolbox
         NSLog("Click waveform generated: \(clickLength) samples")
     }
     
-    private func startMetronome(bpm: Double, vibrate: Bool) {
+    private func startMetronome(bpm: Double) {
         mutex.lock()
         defer { mutex.unlock() }
         
         if isPlaying { return }
         
         currentBpm = bpm
-        shouldVibrate = vibrate
         
         // テンポからサンプル間隔を計算（高精度）
         let beatsPerSecond = bpm / 60.0

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:flutter/services.dart'; // for HapticFeedback
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter/foundation.dart';
 
@@ -25,7 +24,6 @@ class Metronome {
 
   bool _isPlaying = false;
   double _currentBpm = 100.0;
-  bool _shouldVibrate = true; // バイブレーション機能を有効にするフラグ
 
   // シーケンシャル実行制御用
   bool _isProcessingBeat = false;
@@ -227,20 +225,9 @@ class Metronome {
     if (!_isPlaying) return;
 
     try {
-      // バイブレーションと音声を同時に開始するために並列処理
-      final List<Future<void>> tasks = [];
-
-      // バイブレーション
-      if (_shouldVibrate) {
-        tasks.add(HapticFeedback.mediumImpact());
-      }
-
       // 音声再生 - 必ず位置をリセットしてから再生
-      tasks.add(_audioPlayer.seek(Duration.zero));
-      tasks.add(_audioPlayer.play());
-
-      // 全てのタスクを並列実行
-      await Future.wait(tasks);
+      await _audioPlayer.seek(Duration.zero);
+      await _audioPlayer.play();
 
       // 音が確実に鳴るようにデバッグ出力を追加
       print("メトロノーム: ビート再生 - BPM: $_currentBpm");
@@ -329,15 +316,6 @@ class Metronome {
     _timer?.cancel();
     _audioPlayer.dispose();
   }
-
-  // バイブレーション機能の有効/無効を切り替える
-  void setVibration(bool enabled) {
-    _shouldVibrate = enabled;
-    print('バイブレーション機能: ${enabled ? '有効' : '無効'}');
-  }
-
-  // バイブレーション機能が有効かどうかを取得
-  bool get vibrationEnabled => _shouldVibrate;
 }
 
 /// just_audioで使用するためのカスタムオーディオソース
