@@ -161,6 +161,12 @@ class ExperimentSession {
   final InductionVariation inductionVariation;
   final Map<AdvancedExperimentPhase, Duration> phaseDurations;
 
+  /// 誘導フェーズでのテンポ変化割合(1ステップあたり)
+  final double inductionStepPercent;
+
+  /// 誘導フェーズのステップ数
+  final int inductionStepCount;
+
   AdvancedExperimentPhase currentPhase;
   DateTime? currentPhaseStartTime;
   double baselineSpm = 0.0;
@@ -177,6 +183,8 @@ class ExperimentSession {
     required this.subjectId,
     this.subjectData = const {},
     this.inductionVariation = InductionVariation.increasing,
+    this.inductionStepPercent = 0.05,
+    this.inductionStepCount = 4,
     Map<AdvancedExperimentPhase, Duration>? customPhaseDurations,
     this.currentPhase = AdvancedExperimentPhase.preparation,
   }) : phaseDurations = customPhaseDurations ??
@@ -251,15 +259,16 @@ class ExperimentSession {
     if (baselineSpm <= 0) return [];
 
     final steps = <double>[];
-    final stepCount = 4; // 5%, 10%, 15%, 20%の4ステップ
+    final stepCount = inductionStepCount;
+    final stepPercent = inductionStepPercent;
 
     if (inductionVariation == InductionVariation.increasing) {
       for (int i = 1; i <= stepCount; i++) {
-        steps.add(baselineSpm * (1 + 0.05 * i));
+        steps.add(baselineSpm * (1 + stepPercent * i));
       }
     } else {
       for (int i = 1; i <= stepCount; i++) {
-        steps.add(baselineSpm * (1 - 0.05 * i));
+        steps.add(baselineSpm * (1 - stepPercent * i));
       }
     }
 

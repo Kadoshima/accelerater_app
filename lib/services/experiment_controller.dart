@@ -79,6 +79,8 @@ class ExperimentController {
     Map<String, dynamic>? subjectData,
     InductionVariation inductionVariation = InductionVariation.increasing,
     Map<AdvancedExperimentPhase, Duration>? customPhaseDurations,
+    double inductionStepPercent = 0.05,
+    int inductionStepCount = 4,
   }) async {
     // 前のセッションがあれば停止
     await stopExperiment();
@@ -94,6 +96,8 @@ class ExperimentController {
       subjectData: subjectData ?? {},
       inductionVariation: inductionVariation,
       customPhaseDurations: customPhaseDurations,
+      inductionStepPercent: inductionStepPercent,
+      inductionStepCount: inductionStepCount,
     );
 
     _sendMessage('実験を開始しました: ${condition.name}');
