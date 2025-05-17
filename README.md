@@ -2,6 +2,12 @@
 
 A new Flutter project.
 
+## Custom experiment configuration
+
+The experiment screen allows adjusting phase durations and induction tempo
+settings from the UI. Use the sliders in the configuration screen to set each
+phase length, the tempo change per step (%) and the number of tempo steps.
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

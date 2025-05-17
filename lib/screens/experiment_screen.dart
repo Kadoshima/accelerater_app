@@ -42,6 +42,10 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
   final Map<String, dynamic> _subjectData = {};
   InductionVariation _inductionVariation = InductionVariation.increasing;
 
+  // 誘導フェーズ設定
+  double _inductionStepPercent = 5.0; // %
+  int _inductionStepCount = 4;
+
   // フェーズごとの所要時間（分）
   final Map<AdvancedExperimentPhase, double> _phaseDurationMinutes = {
     AdvancedExperimentPhase.preparation: 5,
@@ -189,6 +193,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       subjectData: _subjectData,
       inductionVariation: _inductionVariation,
       customPhaseDurations: customPhaseDurations,
+      inductionStepPercent: _inductionStepPercent / 100,
+      inductionStepCount: _inductionStepCount,
     );
 
     setState(() {
@@ -413,6 +419,55 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                 _inductionVariation = value!;
               });
             },
+          ),
+
+          const SizedBox(height: 16),
+
+          const Text(
+            '誘導フェーズ設定',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+
+          ListTile(
+            title: const Text('テンポ変化幅 (1ステップあたり%)'),
+            subtitle:
+                Text('${_inductionStepPercent.toStringAsFixed(1)}%'),
+            trailing: SizedBox(
+              width: 160,
+              child: Slider(
+                value: _inductionStepPercent,
+                min: 1,
+                max: 20,
+                divisions: 19,
+                label: '${_inductionStepPercent.toStringAsFixed(1)}%',
+                onChanged: (value) {
+                  setState(() {
+                    _inductionStepPercent = value;
+                  });
+                },
+              ),
+            ),
+          ),
+
+          ListTile(
+            title: const Text('ステップ数'),
+            subtitle: Text(_inductionStepCount.toString()),
+            trailing: SizedBox(
+              width: 160,
+              child: Slider(
+                value: _inductionStepCount.toDouble(),
+                min: 1,
+                max: 10,
+                divisions: 9,
+                label: _inductionStepCount.toString(),
+                onChanged: (value) {
+                  setState(() {
+                    _inductionStepCount = value.round();
+                  });
+                },
+              ),
+            ),
           ),
 
           const SizedBox(height: 16),
