@@ -22,6 +22,7 @@ import 'services/metronome.dart'; // メトロノームサービス
 import 'services/native_metronome.dart'; // ネイティブメトロノームサービス
 import 'services/background_service.dart'; // バックグラウンドサービス
 import 'screens/experiment_screen.dart'; // 新しい実験画面
+import 'utils/spm_analysis.dart';
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
 enum ExperimentPhase {
@@ -1535,6 +1536,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
             duration: const Duration(seconds: 3),
           ),
         );
+      }
+      // Save basic analysis results locally
+      try {
+        final summaryPath = await saveSpmAnalysis(
+          timeSeriesData: realExperimentTimeSeriesData,
+          subjectId: subjectId,
+          filePrefix: fileName,
+        );
+        print('Analysis summary saved to: $summaryPath');
+      } catch (e) {
+        print('Failed to save analysis summary: $e');
       }
     } catch (e) {
       print('Error saving experiment data: $e');
