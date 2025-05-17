@@ -334,7 +334,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
 
   // 設定画面
   Widget _buildConfigScreen() {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
