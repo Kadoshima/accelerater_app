@@ -14,6 +14,7 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import kotlin.math.PI
 import kotlin.math.sin
+import kotlin.math.max
 
 class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     private lateinit var channel: MethodChannel
@@ -23,15 +24,18 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     
     // オーディオ関連
     private var audioTrack: AudioTrack? = null
+    private lateinit var clickBuffer: ShortArray
     private val sampleRate = 44100
     private val audioBufferSize = AudioTrack.getMinBufferSize(
         sampleRate,
         AudioFormat.CHANNEL_OUT_MONO,
         AudioFormat.ENCODING_PCM_16BIT
     )
-    
+
     // 高精度タイマー関連
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val schedulerThread = HandlerThread("MetronomeScheduler")
+    private lateinit var schedulerHandler: Handler
     private var nextBeatTime: Long = 0
     private var lastBeatTime: Long = 0
     private var beatCount = 0
@@ -74,7 +78,7 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
             val nextCheckTime = if (timeUntilNextBeat > 10) 5L else 1L
             
             // 次の確認をスケジュール
-            mainHandler.postDelayed(this, nextCheckTime)
+            schedulerHandler.postDelayed(this, nextCheckTime)
         }
     }
     
@@ -85,9 +89,15 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
             channel = MethodChannel(binding.binaryMessenger, "com.example.native_metronome")
             channel.setMethodCallHandler(this)
         }
-        
+
         Log.d("NativeMetronomePlugin", "Plugin attached to engine with context: $context")
-        
+
+        // スケジューラースレッドの初期化
+        if (!schedulerThread.isAlive) {
+            schedulerThread.start()
+            schedulerHandler = Handler(schedulerThread.looper)
+        }
+
         // 音声の初期化（必要に応じて）
         initializeAudio()
     }
@@ -95,6 +105,7 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         releaseResources()
+        schedulerThread.quitSafely()
     }
     
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -130,21 +141,27 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                 .build()
-                
+
+            clickBuffer = generateClickWaveform()
+            val bufferSize = max(audioBufferSize, clickBuffer.size * 2)
+
             audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(audioAttributes)
-                .setAudioFormat(AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build())
-                .setBufferSizeInBytes(audioBufferSize)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STATIC)
                 .build()
-                
-            // クリック音を生成してロード
-            val clickBuffer = generateClickWaveform()
+
             audioTrack?.write(clickBuffer, 0, clickBuffer.size)
+        } else {
+            audioTrack?.stop()
+            audioTrack?.setPlaybackHeadPosition(0)
         }
     }
     
@@ -160,18 +177,18 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
         nextBeatTime = lastBeatTime
         
         // 高精度タイマーで処理開始
-        mainHandler.post(beatScheduler)
+        schedulerHandler.post(beatScheduler)
     }
-    
+
     private fun stopMetronome() {
         if (!isPlaying) return
-        
+
         isPlaying = false
-        mainHandler.removeCallbacks(beatScheduler)
-        
+        schedulerHandler.removeCallbacks(beatScheduler)
+
         // 最後に再生位置をリセット
         audioTrack?.stop()
-        audioTrack?.reloadStaticData()
+        audioTrack?.setPlaybackHeadPosition(0)
     }
     
     private fun setTempo(bpm: Double) {
@@ -184,7 +201,7 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
             // オーディオ再生
             audioTrack?.let { track ->
                 track.stop()
-                track.reloadStaticData()
+                track.setPlaybackHeadPosition(0)
                 track.play()
             }
         } catch (e: Exception) {
@@ -210,10 +227,14 @@ class NativeMetronomePlugin: FlutterPlugin, MethodCallHandler {
     
     private fun releaseResources() {
         isPlaying = false
-        mainHandler.removeCallbacks(beatScheduler)
-        
+        schedulerHandler.removeCallbacks(beatScheduler)
+
         audioTrack?.release()
         audioTrack = null
+
+        if (schedulerThread.isAlive) {
+            schedulerThread.quitSafely()
+        }
     }
 
     // 静的メソッドを追加（プラグイン登録用）
