@@ -233,7 +233,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   DateTime? lastPitchChangeTime; // 最後にピッチを変更した時刻
 
   // 設定パラメータ
-  int freeWalkingDurationSeconds = 120; // 自由歩行フェーズの期間 (2分)
+  int freeWalkingDurationSeconds = 300; // 自由歩行フェーズの期間 (5分)
   int stableThresholdSeconds = 60; // 安定とみなす秒数 (1分)
   double pitchDifferenceThreshold = 10.0; // ピッチ差の閾値
   double pitchIncrementStep = 5.0; // ピッチ増加ステップ
@@ -2581,17 +2581,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                     dotData: FlDotData(show: false),
                                   ),
                                   // ターゲットBPM (直線)
-                                  LineChartBarData(
-                                    spots: [
-                                      FlSpot(0, currentMusicBPM),
-                                      FlSpot(bpmSpots.length.toDouble(),
-                                          currentMusicBPM),
-                                    ],
-                                    color: Colors.red.withOpacity(0.5),
-                                    barWidth: 2,
-                                    dotData: FlDotData(show: false),
-                                    dashArray: [5, 5],
-                                  ),
+                                  if (targetPitch > 0)
+                                    LineChartBarData(
+                                      spots: [
+                                        FlSpot(bpmSpots.first.x, targetPitch),
+                                        FlSpot(bpmSpots.last.x, targetPitch),
+                                      ],
+                                      color: Colors.red.withOpacity(0.5),
+                                      barWidth: 2,
+                                      dotData: FlDotData(show: false),
+                                      dashArray: [5, 5],
+                                    ),
                                 ],
                               ),
                             ),

@@ -36,7 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.2
   flutter_blue_plus: ^1.5.2 #Added
   syncfusion_flutter_charts: ^22.2.8 # 追加: グラフ表示
-  fl_chart: ^0.62.0 # 追加: グラフ表示
+  fl_chart: ^0.65.0 # 追加: グラフ表示
   path_provider: ^2.0.15 # 追加: ファイル保存
   csv: ^5.0.2 # 追加: CSV操作
   intl: ^0.18.1 # 追加: 日付/時刻操作
