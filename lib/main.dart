@@ -14,6 +14,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart'; // 環境変数管理用
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart'; // 位置情報を取得するためのパッケージ
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 // 独自モジュール
 import 'models/sensor_data.dart';
@@ -265,6 +266,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // スキャンで見つかったデバイスリスト
   final List<ScanResult> _scanResults = [];
 
+  // スマホ加速度センサー利用フラグとサブスクリプション
+  bool _usePhoneSensor = false;
+  StreamSubscription<AccelerometerEvent>? _phoneSensorSubscription;
+
   // RAWデータグラフ用
   List<FlSpot> accXSpots = [];
   List<FlSpot> accYSpots = [];
@@ -319,8 +324,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // 位置情報の権限を確認・リクエスト
     _checkLocationPermission();
 
-    // 初期化を非同期で安全に行う
-    _initializeComponents();
+    // 初期化はデバイス選択後に実施
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showDeviceSelectionDialog();
+    });
   }
 
   // 位置情報の権限をチェックしてリクエスト
@@ -394,6 +401,40 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
   }
 
+  // デバイス選択ダイアログを表示
+  Future<void> _showDeviceSelectionDialog() async {
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('デバイス選択'),
+          content: const Text('M5Stackと接続するか、スマホのみで計測するか選択してください。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'm5'),
+              child: const Text('M5Stack'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'phone'),
+              child: const Text('スマホのみ'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!mounted) return;
+
+    if (result == 'phone') {
+      setState(() {
+        _usePhoneSensor = true;
+      });
+    }
+
+    await _initializeComponents();
+  }
+
   // コンポーネントを初期化する
   Future<void> _initializeComponents() async {
     try {
@@ -404,13 +445,35 @@ class _BLEHomePageState extends State<BLEHomePage> {
       // メトロノームサービスの初期化（改善版）
       await _initializeMetronomes();
 
-      // Bluetoothも初期化
-      await _initBluetooth();
+      // データ入力元の初期化
+      if (_usePhoneSensor) {
+        _startPhoneSensorStream();
+      } else {
+        await _initBluetooth();
+      }
 
       setState(() {}); // UI更新
     } catch (e) {
       print('初期化エラー: $e');
     }
+  }
+
+  // スマホの加速度センサーを監視開始
+  void _startPhoneSensorStream() {
+    _phoneSensorSubscription?.cancel();
+    _phoneSensorSubscription = accelerometerEvents.listen((event) {
+      final sensorData = M5SensorData(
+        device: 'phone',
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        type: 'raw',
+        data: {
+          'accX': event.x,
+          'accY': event.y,
+          'accZ': event.z,
+        },
+      );
+      _processSensorData(sensorData);
+    });
   }
 
   // バイブレーションサポートのチェックメソッドは削除して、
@@ -557,7 +620,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 実験を開始する（被験者番号入力ダイアログを表示）
   void _startExperimentWithDialog() async {
-    if (!isConnected) {
+    if (!_usePhoneSensor && !isConnected) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('デバイスに接続してください'),
@@ -1084,6 +1147,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
     _streamSubscriptions.clear();
 
+    // スマホセンサーストリームの停止
+    _phoneSensorSubscription?.cancel();
+
     // オーディオプレーヤーの解放
     // _audioPlayer.dispose();
 
@@ -1151,40 +1217,56 @@ class _BLEHomePageState extends State<BLEHomePage> {
           // Bluetooth接続ステータス - 常に表示
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: isConnected ? Colors.green.shade100 : Colors.red.shade100,
+            color: _usePhoneSensor
+                ? Colors.blue.shade100
+                : (isConnected ? Colors.green.shade100 : Colors.red.shade100),
             child: Row(
               children: [
                 Icon(
-                  isConnected ? Icons.bluetooth_connected : Icons.bluetooth,
-                  color:
-                      isConnected ? Colors.green.shade800 : Colors.red.shade800,
+                  _usePhoneSensor
+                      ? Icons.phone_android
+                      : (isConnected
+                          ? Icons.bluetooth_connected
+                          : Icons.bluetooth),
+                  color: _usePhoneSensor
+                      ? Colors.blue.shade800
+                      : (isConnected
+                          ? Colors.green.shade800
+                          : Colors.red.shade800),
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  isConnected ? 'M5StickIMUに接続中' : 'デバイスに接続していません',
+                  _usePhoneSensor
+                      ? 'スマホ内蔵センサーを使用中'
+                      : (isConnected
+                          ? 'M5StickIMUに接続中'
+                          : 'デバイスに接続していません'),
                   style: TextStyle(
-                    color: isConnected
-                        ? Colors.green.shade800
-                        : Colors.red.shade800,
+                    color: _usePhoneSensor
+                        ? Colors.blue.shade800
+                        : (isConnected
+                            ? Colors.green.shade800
+                            : Colors.red.shade800),
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 const Spacer(),
-                ElevatedButton(
-                  onPressed: isScanning
-                      ? null
-                      : () {
-                          print('スキャンボタンが押されました');
-                          startScan();
-                        },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isConnected
-                        ? Colors.orange.shade200
-                        : Colors.blue.shade200,
-                    foregroundColor: Colors.black87,
+                if (!_usePhoneSensor)
+                  ElevatedButton(
+                    onPressed: isScanning
+                        ? null
+                        : () {
+                            print('スキャンボタンが押されました');
+                            startScan();
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isConnected
+                          ? Colors.orange.shade200
+                          : Colors.blue.shade200,
+                      foregroundColor: Colors.black87,
+                    ),
+                    child: Text(isConnected ? '再接続' : 'スキャン'),
                   ),
-                  child: Text(isConnected ? '再接続' : 'スキャン'),
-                ),
               ],
             ),
           ),
