@@ -49,6 +49,10 @@
 	<string>このアプリはセンサーデータを取得するためにBluetoothを使用します</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>このアプリはセンサーデータを取得するためにBluetoothを使用します</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>このアプリは実験データに位置情報を記録するために使用します</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>このアプリは実験データに位置情報を記録するために使用します</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

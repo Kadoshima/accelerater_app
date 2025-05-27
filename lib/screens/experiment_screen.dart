@@ -10,12 +10,15 @@ import '../utils/gait_analysis_service.dart';
 import '../services/metronome.dart';
 import '../services/native_metronome.dart';
 import '../utils/responsive_helper.dart';
+import '../widgets/tablet_dashboard.dart';
 
 class ExperimentScreen extends StatefulWidget {
   final GaitAnalysisService gaitAnalysisService;
   final Metronome metronome;
   final NativeMetronome nativeMetronome;
   final bool useNativeMetronome;
+  final bool isBluetoothConnected;
+  final VoidCallback? onBluetoothSettings;
 
   const ExperimentScreen({
     Key? key,
@@ -23,6 +26,8 @@ class ExperimentScreen extends StatefulWidget {
     required this.metronome,
     required this.nativeMetronome,
     this.useNativeMetronome = true,
+    this.isBluetoothConnected = false,
+    this.onBluetoothSettings,
   }) : super(key: key);
 
   @override
@@ -314,6 +319,95 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
   Widget build(BuildContext context) {
     final session = _experimentController.currentSession;
 
+    // タブレットの場合は常に情報表示ダッシュボード
+    if (ResponsiveHelper.isTablet(context)) {
+      // Bluetooth接続が完了している場合のみ実験を自動開始
+      if (!_isRunning && _isConfiguring && widget.isBluetoothConnected) {
+        // 初回起動時にはデフォルト設定で自動開始
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _startExperiment();
+        });
+      }
+      
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('歩行データモニター'),
+          backgroundColor: Colors.blue,
+          elevation: 0,
+          actions: [
+            // Bluetooth接続ボタン
+            IconButton(
+              icon: Icon(
+                widget.isBluetoothConnected
+                    ? Icons.bluetooth_connected
+                    : Icons.bluetooth_disabled,
+                color: widget.isBluetoothConnected
+                    ? Colors.white
+                    : Colors.white70,
+              ),
+              onPressed: widget.onBluetoothSettings,
+            ),
+          ],
+        ),
+        body: widget.isBluetoothConnected
+            ? (session != null && _isRunning
+                ? TabletDashboard(
+                    session: session,
+                    controller: _experimentController,
+                    spmSpots: _spmSpots,
+                    targetSpots: _targetSpots,
+                    minY: _minY,
+                    maxY: _maxY,
+                    maxX: _maxX,
+                  )
+                : const Center(
+                    child: CircularProgressIndicator(),
+                  ))
+            : Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.bluetooth_disabled,
+                      size: 80,
+                      color: Colors.grey[400],
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Bluetoothデバイスに接続してください',
+                      style: TextStyle(
+                        fontSize: 20,
+                        color: Colors.grey[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'M5Stickデバイスとの接続が必要です',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.bluetooth_searching),
+                      label: const Text('デバイスを選択'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
+                      ),
+                      onPressed: widget.onBluetoothSettings,
+                    ),
+                  ],
+                ),
+              ),
+      );
+    }
+
+    // スマートフォンの場合は従来のUI
     return Scaffold(
       appBar: AppBar(
         title: const Text('歩行リズム誘導実験'),
@@ -332,8 +426,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       floatingActionButton: _isRunning
           ? FloatingActionButton(
               backgroundColor: Colors.red,
-              child: const Icon(Icons.stop),
               onPressed: _stopExperiment,
+              child: const Icon(Icons.stop),
             )
           : null,
     );
@@ -345,7 +439,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
     final spacing = ResponsiveHelper.getAdaptiveSpacing(context);
     final buttonHeight = ResponsiveHelper.getButtonHeight(context);
     final sliderWidth = ResponsiveHelper.getSliderWidth(context);
-    
+
     return SingleChildScrollView(
       padding: EdgeInsets.all(padding),
       child: Column(
@@ -446,8 +540,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
 
           ListTile(
             title: const Text('テンポ変化幅 (1ステップあたり%)'),
-            subtitle:
-                Text('${_inductionStepPercent.toStringAsFixed(1)}%'),
+            subtitle: Text('${_inductionStepPercent.toStringAsFixed(1)}%'),
             trailing: SizedBox(
               width: sliderWidth,
               child: Slider(
@@ -555,12 +648,12 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
     final stableSeconds = _experimentController.getStableSeconds();
     final remainingSeconds = session.getRemainingSeconds();
     final progress = session.getPhaseProgress();
-    
+
     final padding = ResponsiveHelper.getAdaptivePadding(context);
     final spacing = ResponsiveHelper.getAdaptiveSpacing(context);
 
     if (ResponsiveHelper.shouldUseTwoColumnLayout(context)) {
-      return _buildTwoColumnLayout(session, phaseInfo, currentSpm, isStable, 
+      return _buildTwoColumnLayout(session, phaseInfo, currentSpm, isStable,
           stableSeconds, remainingSeconds, progress, padding, spacing);
     }
 
@@ -585,7 +678,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                       Text(
                         phaseInfo.name,
                         style: TextStyle(
-                          fontSize: ResponsiveHelper.getFontSize(context, baseSize: 20),
+                          fontSize: ResponsiveHelper.getFontSize(context,
+                              baseSize: 20),
                           fontWeight: FontWeight.bold,
                           color: Colors.white,
                         ),
@@ -601,7 +695,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                   Text(
                     '残り時間: ${_formatDuration(Duration(seconds: remainingSeconds))}',
                     style: TextStyle(
-                      fontSize: ResponsiveHelper.getFontSize(context, baseSize: 16),
+                      fontSize:
+                          ResponsiveHelper.getFontSize(context, baseSize: 16),
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
                     ),
@@ -617,23 +712,24 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
             ),
           ),
 
-          const SizedBox(height: 16),
+          SizedBox(height: spacing),
 
           // 歩行データカード
           Card(
             elevation: 4,
             child: Padding(
-              padding: const EdgeInsets.all(16.0),
+              padding: EdgeInsets.all(spacing),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
+                      Text(
                         '歩行データ',
                         style: TextStyle(
-                          fontSize: 18,
+                          fontSize: ResponsiveHelper.getFontSize(context,
+                              baseSize: 18),
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -740,19 +836,11 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
               ),
             ),
           ),
-
-          // 手動進行ボタン（デバッグ用、リリース時には削除）
-          if (false) // デバッグフラグ
-            TextButton(
-              onPressed: () {
-                _experimentController.advanceToNextPhase();
-              },
-              child: const Text('次のフェーズへ（デバッグ用）'),
-            ),
         ],
       ),
     );
   }
+
 
   // 2カラムレイアウト（iPad横向き用）
   Widget _buildTwoColumnLayout(
@@ -814,7 +902,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
   }
 
   // フェーズカードを構築
-  Widget _buildPhaseCard(dynamic phaseInfo, int remainingSeconds, double progress, double spacing) {
+  Widget _buildPhaseCard(dynamic phaseInfo, int remainingSeconds,
+      double progress, double spacing) {
     return Card(
       color: phaseInfo.color,
       elevation: 4,
@@ -830,7 +919,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                 Text(
                   phaseInfo.name,
                   style: TextStyle(
-                    fontSize: ResponsiveHelper.getFontSize(context, baseSize: 20),
+                    fontSize:
+                        ResponsiveHelper.getFontSize(context, baseSize: 20),
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
@@ -864,7 +954,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
   }
 
   // データカードを構築
-  Widget _buildDataCard(double currentSpm, bool isStable, int stableSeconds, double spacing) {
+  Widget _buildDataCard(
+      double currentSpm, bool isStable, int stableSeconds, double spacing) {
     return Card(
       elevation: 4,
       child: Padding(

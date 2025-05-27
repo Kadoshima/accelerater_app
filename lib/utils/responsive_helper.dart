@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 class ResponsiveHelper {
   static bool isTablet(BuildContext context) {
-    final shortestSide = MediaQuery.of(context).size.shortestSide;
-    return shortestSide >= 600;
+    final size = MediaQuery.of(context).size;
+    final shortestSide = size.shortestSide;
+    // iPadの最小幅は768px（iPad mini）なので、より適切な閾値に変更
+    return shortestSide >= 600 || (size.width >= 768);
   }
 
   static bool isLandscape(BuildContext context) {

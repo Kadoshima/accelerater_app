@@ -23,6 +23,7 @@ import 'services/metronome.dart'; // メトロノームサービス
 import 'services/native_metronome.dart'; // ネイティブメトロノームサービス
 import 'services/background_service.dart'; // バックグラウンドサービス
 import 'screens/experiment_screen.dart'; // 新しい実験画面
+import 'utils/responsive_helper.dart'; // レスポンシブヘルパー
 import 'utils/spm_analysis.dart';
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
@@ -263,6 +264,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 重複したスキャン/接続リクエストを防ぐフラグ
   bool _isInitialized = false;
   bool _isDisposing = false;
+  bool _componentsInitialized = false; // コンポーネント初期化済みフラグ
 
   // スキャンで見つかったデバイスリスト
   final List<ScanResult> _scanResults = [];
@@ -315,6 +317,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
   @override
   void initState() {
     super.initState();
+
+    // 歩行解析サービスの初期化
+    gaitAnalysisService = GaitAnalysisService();
+    
+    // メトロノームサービスの初期化
+    _metronome = Metronome();
+    _nativeMetronome = NativeMetronome();
 
     // エラーハンドリングの設定
     FlutterError.onError = (details) {
@@ -438,12 +447,16 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // コンポーネントを初期化する
   Future<void> _initializeComponents() async {
-    try {
-      // 歩行解析サービスの初期化
-      gaitAnalysisService =
-          GaitAnalysisService(); // 新しいアルゴリズムではsamplingRateが不要になりました
+    // 既に初期化済みの場合はスキップ
+    if (_componentsInitialized) {
+      print('コンポーネントは既に初期化済みです');
+      return;
+    }
 
-      // メトロノームサービスの初期化（改善版）
+    try {
+      // 歩行解析サービスは既にinitStateで初期化済みなのでスキップ
+      
+      // メトロノームの詳細初期化（インスタンスは作成済み）
       await _initializeMetronomes();
 
       // データ入力元の初期化
@@ -453,7 +466,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
         await _initBluetooth();
       }
 
-      setState(() {}); // UI更新
+      setState(() {
+        _isInitialized = true;
+        _componentsInitialized = true; // コンポーネント初期化完了フラグを設定
+      });
     } catch (e) {
       print('初期化エラー: $e');
     }
@@ -1167,6 +1183,21 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    // タブレットの場合は直接情報表示画面（新実験モード）へ
+    if (ResponsiveHelper.isTablet(context)) {
+      return ExperimentScreen(
+        gaitAnalysisService: gaitAnalysisService,
+        metronome: _metronome,
+        nativeMetronome: _nativeMetronome,
+        useNativeMetronome: _useNativeMetronome,
+        isBluetoothConnected: targetDevice != null,
+        onBluetoothSettings: () {
+          _showDeviceSelectionDialog();
+        },
+      );
+    }
+    
+    // スマートフォンの場合は従来のUI
     return Scaffold(
       appBar: AppBar(
         title: const Text('Gait Analysis App'),
@@ -1239,9 +1270,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 Text(
                   _usePhoneSensor
                       ? 'スマホ内蔵センサーを使用中'
-                      : (isConnected
-                          ? 'M5StickIMUに接続中'
-                          : 'デバイスに接続していません'),
+                      : (isConnected ? 'M5StickIMUに接続中' : 'デバイスに接続していません'),
                   style: TextStyle(
                     color: _usePhoneSensor
                         ? Colors.blue.shade800
@@ -4692,9 +4721,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // メトロノームの初期化処理
   Future<void> _initializeMetronomes() async {
-    // メトロノームインスタンスを作成
-    _metronome = Metronome();
-    _nativeMetronome = NativeMetronome();
+    // メトロノームインスタンスは既にinitStateで作成済み
 
     // プラットフォームを確認
     String platform = Platform.isIOS
