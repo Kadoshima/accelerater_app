@@ -9,6 +9,7 @@ import '../services/experiment_controller.dart';
 import '../utils/gait_analysis_service.dart';
 import '../services/metronome.dart';
 import '../services/native_metronome.dart';
+import '../utils/responsive_helper.dart';
 
 class ExperimentScreen extends StatefulWidget {
   final GaitAnalysisService gaitAnalysisService;
@@ -340,21 +341,32 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
 
   // 設定画面
   Widget _buildConfigScreen() {
+    final padding = ResponsiveHelper.getAdaptivePadding(context);
+    final spacing = ResponsiveHelper.getAdaptiveSpacing(context);
+    final buttonHeight = ResponsiveHelper.getButtonHeight(context);
+    final sliderWidth = ResponsiveHelper.getSliderWidth(context);
+    
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
+      padding: EdgeInsets.all(padding),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             '実験設定',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              fontSize: ResponsiveHelper.getFontSize(context, baseSize: 24),
+              fontWeight: FontWeight.bold,
+            ),
           ),
-          const SizedBox(height: 24),
+          SizedBox(height: spacing * 1.5),
 
           // 被験者情報
-          const Text(
+          Text(
             '被験者情報',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              fontSize: ResponsiveHelper.getFontSize(context, baseSize: 18),
+              fontWeight: FontWeight.bold,
+            ),
           ),
           TextField(
             decoration: const InputDecoration(
@@ -421,20 +433,23 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
             },
           ),
 
-          const SizedBox(height: 16),
+          SizedBox(height: spacing),
 
-          const Text(
+          Text(
             '誘導フェーズ設定',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              fontSize: ResponsiveHelper.getFontSize(context, baseSize: 18),
+              fontWeight: FontWeight.bold,
+            ),
           ),
-          const SizedBox(height: 8),
+          SizedBox(height: spacing / 2),
 
           ListTile(
             title: const Text('テンポ変化幅 (1ステップあたり%)'),
             subtitle:
                 Text('${_inductionStepPercent.toStringAsFixed(1)}%'),
             trailing: SizedBox(
-              width: 160,
+              width: sliderWidth,
               child: Slider(
                 value: _inductionStepPercent,
                 min: 1,
@@ -454,7 +469,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
             title: const Text('ステップ数'),
             subtitle: Text(_inductionStepCount.toString()),
             trailing: SizedBox(
-              width: 160,
+              width: sliderWidth,
               child: Slider(
                 value: _inductionStepCount.toDouble(),
                 min: 1,
@@ -470,7 +485,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
             ),
           ),
 
-          const SizedBox(height: 16),
+          SizedBox(height: spacing),
 
           // フェーズ時間設定
           ExpansionTile(
@@ -482,15 +497,15 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                 return ListTile(
                   title: Text(phaseInfo.name),
                   subtitle:
-                      Text(_phaseDurationMinutes[phase]!.toString() + '分'),
+                      Text('${_phaseDurationMinutes[phase]!.toString()}分'),
                   trailing: SizedBox(
-                    width: 160,
+                    width: sliderWidth,
                     child: Slider(
                       value: _phaseDurationMinutes[phase]!,
                       min: 1,
                       max: 15,
                       divisions: 14,
-                      label: _phaseDurationMinutes[phase]!.toString() + '分',
+                      label: '${_phaseDurationMinutes[phase]!.toString()}分',
                       onChanged: (value) {
                         setState(() {
                           _phaseDurationMinutes[phase] = value;
@@ -503,19 +518,24 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
             ],
           ),
 
-          const SizedBox(height: 24),
+          SizedBox(height: spacing * 1.5),
 
           // 開始ボタン
           SizedBox(
             width: double.infinity,
-            height: 50,
+            height: buttonHeight,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
                 foregroundColor: Colors.white,
               ),
               onPressed: _startExperiment,
-              child: const Text('実験を開始', style: TextStyle(fontSize: 18)),
+              child: Text(
+                '実験を開始',
+                style: TextStyle(
+                  fontSize: ResponsiveHelper.getFontSize(context, baseSize: 18),
+                ),
+              ),
             ),
           ),
         ],
@@ -535,9 +555,17 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
     final stableSeconds = _experimentController.getStableSeconds();
     final remainingSeconds = session.getRemainingSeconds();
     final progress = session.getPhaseProgress();
+    
+    final padding = ResponsiveHelper.getAdaptivePadding(context);
+    final spacing = ResponsiveHelper.getAdaptiveSpacing(context);
+
+    if (ResponsiveHelper.shouldUseTwoColumnLayout(context)) {
+      return _buildTwoColumnLayout(session, phaseInfo, currentSpm, isStable, 
+          stableSeconds, remainingSeconds, progress, padding, spacing);
+    }
 
     return Padding(
-      padding: const EdgeInsets.all(16.0),
+      padding: EdgeInsets.all(padding),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -546,39 +574,39 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
             color: phaseInfo.color,
             elevation: 4,
             child: Padding(
-              padding: const EdgeInsets.all(16.0),
+              padding: EdgeInsets.all(spacing),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
                       Icon(phaseInfo.icon, color: Colors.white),
-                      const SizedBox(width: 8),
+                      SizedBox(width: spacing / 2),
                       Text(
                         phaseInfo.name,
-                        style: const TextStyle(
-                          fontSize: 20,
+                        style: TextStyle(
+                          fontSize: ResponsiveHelper.getFontSize(context, baseSize: 20),
                           fontWeight: FontWeight.bold,
                           color: Colors.white,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  SizedBox(height: spacing / 2),
                   Text(
                     phaseInfo.description,
                     style: const TextStyle(color: Colors.white),
                   ),
-                  const SizedBox(height: 16),
+                  SizedBox(height: spacing),
                   Text(
                     '残り時間: ${_formatDuration(Duration(seconds: remainingSeconds))}',
-                    style: const TextStyle(
-                      fontSize: 16,
+                    style: TextStyle(
+                      fontSize: ResponsiveHelper.getFontSize(context, baseSize: 16),
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  SizedBox(height: spacing / 2),
                   LinearProgressIndicator(
                     value: progress,
                     backgroundColor: Colors.white.withOpacity(0.3),
@@ -722,6 +750,161 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
               child: const Text('次のフェーズへ（デバッグ用）'),
             ),
         ],
+      ),
+    );
+  }
+
+  // 2カラムレイアウト（iPad横向き用）
+  Widget _buildTwoColumnLayout(
+    ExperimentSession session,
+    dynamic phaseInfo,
+    double currentSpm,
+    bool isStable,
+    int stableSeconds,
+    int remainingSeconds,
+    double progress,
+    double padding,
+    double spacing,
+  ) {
+    return Padding(
+      padding: EdgeInsets.all(padding),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 左カラム：設定とデータ
+          Expanded(
+            flex: 1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildPhaseCard(phaseInfo, remainingSeconds, progress, spacing),
+                SizedBox(height: spacing),
+                _buildDataCard(currentSpm, isStable, stableSeconds, spacing),
+              ],
+            ),
+          ),
+          SizedBox(width: spacing),
+          // 右カラム：グラフ
+          Expanded(
+            flex: 2,
+            child: Card(
+              elevation: 4,
+              child: Padding(
+                padding: EdgeInsets.all(padding),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '歩行ピッチの推移',
+                      style: TextStyle(
+                        fontSize: ResponsiveHelper.getFontSize(context, baseSize: 18),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    SizedBox(height: spacing),
+                    Expanded(child: _buildSpmChart()),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // フェーズカードを構築
+  Widget _buildPhaseCard(dynamic phaseInfo, int remainingSeconds, double progress, double spacing) {
+    return Card(
+      color: phaseInfo.color,
+      elevation: 4,
+      child: Padding(
+        padding: EdgeInsets.all(spacing),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(phaseInfo.icon, color: Colors.white),
+                SizedBox(width: spacing / 2),
+                Text(
+                  phaseInfo.name,
+                  style: TextStyle(
+                    fontSize: ResponsiveHelper.getFontSize(context, baseSize: 20),
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: spacing / 2),
+            Text(
+              phaseInfo.description,
+              style: const TextStyle(color: Colors.white),
+            ),
+            SizedBox(height: spacing),
+            Text(
+              '残り時間: ${_formatDuration(Duration(seconds: remainingSeconds))}',
+              style: TextStyle(
+                fontSize: ResponsiveHelper.getFontSize(context, baseSize: 16),
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(height: spacing / 2),
+            LinearProgressIndicator(
+              value: progress,
+              backgroundColor: Colors.white.withOpacity(0.3),
+              color: Colors.white,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // データカードを構築
+  Widget _buildDataCard(double currentSpm, bool isStable, int stableSeconds, double spacing) {
+    return Card(
+      elevation: 4,
+      child: Padding(
+        padding: EdgeInsets.all(spacing),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '歩行データ',
+              style: TextStyle(
+                fontSize: ResponsiveHelper.getFontSize(context, baseSize: 18),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: spacing),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildDataColumn(
+                  '現在のピッチ',
+                  '${currentSpm.toStringAsFixed(1)} SPM',
+                  Icons.directions_walk,
+                  Colors.blue,
+                ),
+                _buildDataColumn(
+                  '安定性',
+                  isStable ? '安定' : '不安定',
+                  isStable ? Icons.check_circle : Icons.warning,
+                  isStable ? Colors.green : Colors.orange,
+                ),
+                _buildDataColumn(
+                  '安定時間',
+                  '$stableSeconds秒',
+                  Icons.timer,
+                  Colors.purple,
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
