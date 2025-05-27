@@ -24,6 +24,7 @@ import 'services/native_metronome.dart'; // ネイティブメトロノームサ
 import 'services/background_service.dart'; // バックグラウンドサービス
 import 'screens/experiment_screen.dart'; // 新しい実験画面
 import 'utils/spm_analysis.dart';
+import 'widgets/device_connection_screen.dart'; // デバイス接続画面
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
 enum ExperimentPhase {
@@ -256,6 +257,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 接続先デバイス
   BluetoothDevice? targetDevice;
+  
+  // 心拍センサー関連
+  BluetoothDevice? heartRateDevice;
+  final Guid heartRateServiceUuid = Guid("0000180d-0000-1000-8000-00805f9b34fb");
+  final Guid heartRateMeasurementCharUuid = Guid("00002a37-0000-1000-8000-00805f9b34fb");
+  int currentHeartRate = 0;
+  bool isHeartRateConnected = false;
 
   // サブスクリプション管理用
   final List<StreamSubscription> _streamSubscriptions = [];
@@ -404,36 +412,23 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // デバイス選択ダイアログを表示
   Future<void> _showDeviceSelectionDialog() async {
-    final result = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('デバイス選択'),
-          content: const Text('M5Stackと接続するか、スマホのみで計測するか選択してください。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'm5'),
-              child: const Text('M5Stack'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'phone'),
-              child: const Text('スマホのみ'),
-            ),
-          ],
-        );
-      },
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DeviceConnectionScreen(
+          onConnectionComplete: (BluetoothDevice? imu, BluetoothDevice? hr) {
+            setState(() {
+              targetDevice = imu;
+              heartRateDevice = hr;
+              isConnected = imu != null;
+              isHeartRateConnected = hr != null;
+            });
+            Navigator.pop(context);
+            _initializeComponents();
+          },
+        ),
+      ),
     );
-
-    if (!mounted) return;
-
-    if (result == 'phone') {
-      setState(() {
-        _usePhoneSensor = true;
-      });
-    }
-
-    await _initializeComponents();
   }
 
   // コンポーネントを初期化する
@@ -447,10 +442,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
       await _initializeMetronomes();
 
       // データ入力元の初期化
-      if (_usePhoneSensor) {
-        _startPhoneSensorStream();
-      } else {
-        await _initBluetooth();
+      if (targetDevice != null) {
+        await _setupSerialCommunication();
+      }
+      
+      // 心拍センサーの初期化
+      if (heartRateDevice != null) {
+        await _setupHeartRateMonitoring();
       }
 
       setState(() {}); // UI更新
@@ -1218,54 +1216,67 @@ class _BLEHomePageState extends State<BLEHomePage> {
           // Bluetooth接続ステータス - 常に表示
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: _usePhoneSensor
-                ? Colors.blue.shade100
-                : (isConnected ? Colors.green.shade100 : Colors.red.shade100),
+            color: (isConnected && isHeartRateConnected) 
+                ? Colors.green.shade100 
+                : (isConnected || isHeartRateConnected)
+                    ? Colors.orange.shade100
+                    : Colors.red.shade100,
             child: Row(
               children: [
+                // IMU接続状態
                 Icon(
-                  _usePhoneSensor
-                      ? Icons.phone_android
-                      : (isConnected
-                          ? Icons.bluetooth_connected
-                          : Icons.bluetooth),
-                  color: _usePhoneSensor
-                      ? Colors.blue.shade800
-                      : (isConnected
-                          ? Colors.green.shade800
-                          : Colors.red.shade800),
+                  isConnected
+                      ? Icons.bluetooth_connected
+                      : Icons.bluetooth_disabled,
+                  color: isConnected
+                      ? Colors.green.shade800
+                      : Colors.red.shade800,
+                  size: 20,
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 4),
                 Text(
-                  _usePhoneSensor
-                      ? 'スマホ内蔵センサーを使用中'
-                      : (isConnected
-                          ? 'M5StickIMUに接続中'
-                          : 'デバイスに接続していません'),
+                  isConnected ? 'IMU' : 'IMU未接続',
                   style: TextStyle(
-                    color: _usePhoneSensor
-                        ? Colors.blue.shade800
-                        : (isConnected
-                            ? Colors.green.shade800
-                            : Colors.red.shade800),
+                    color: isConnected
+                        ? Colors.green.shade800
+                        : Colors.red.shade800,
                     fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                // 心拍センサー接続状態
+                Icon(
+                  isHeartRateConnected
+                      ? Icons.favorite
+                      : Icons.favorite_border,
+                  color: isHeartRateConnected
+                      ? Colors.green.shade800
+                      : Colors.red.shade800,
+                  size: 20,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  isHeartRateConnected ? '心拍' : '心拍未接続',
+                  style: TextStyle(
+                    color: isHeartRateConnected
+                        ? Colors.green.shade800
+                        : Colors.red.shade800,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
                   ),
                 ),
                 const Spacer(),
-                if (!_usePhoneSensor)
-                  ElevatedButton(
-                    onPressed: isScanning
-                        ? null
-                        : () {
-                            print('スキャンボタンが押されました');
-                            startScan();
-                          },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isConnected
-                          ? Colors.orange.shade200
-                          : Colors.blue.shade200,
-                      foregroundColor: Colors.black87,
-                    ),
+                ElevatedButton(
+                  onPressed: () {
+                    _showDeviceSelectionDialog();
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: (isConnected && isHeartRateConnected)
+                        ? Colors.orange.shade200
+                        : Colors.blue.shade200,
+                    foregroundColor: Colors.black87,
+                  ),
                     child: Text(isConnected ? '再接続' : 'スキャン'),
                   ),
               ],
@@ -3176,6 +3187,68 @@ class _BLEHomePageState extends State<BLEHomePage> {
               ),
             ),
             const SizedBox(height: 16),
+            
+            // --- ★心拍数カード ---
+            if (isHeartRateConnected)
+              Card(
+                elevation: 4,
+                color: Colors.red.shade50,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.favorite, color: Colors.red),
+                          SizedBox(width: 8),
+                          Text(
+                            '心拍数',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            currentHeartRate > 0
+                                ? currentHeartRate.toString()
+                                : '--',
+                            style: const TextStyle(
+                              fontSize: 36,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'BPM',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.red,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (heartRateDevice != null)
+                            Text(
+                              heartRateDevice!.platformName,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            if (isHeartRateConnected) const SizedBox(height: 16),
 
             // --- ★メトロノームカード (新規追加) ---
             Card(
@@ -4019,6 +4092,62 @@ class _BLEHomePageState extends State<BLEHomePage> {
     } catch (e) {
       print('サービス探索/Notify設定エラー: $e');
     }
+  }
+  
+  // 心拍センサーのモニタリングをセットアップ
+  Future<void> _setupHeartRateMonitoring() async {
+    if (heartRateDevice == null || _isDisposing) return;
+    
+    try {
+      List<BluetoothService> services = await heartRateDevice!.discoverServices();
+      
+      // 標準の心拍サービスを探す
+      for (BluetoothService service in services) {
+        if (service.uuid == heartRateServiceUuid) {
+          for (BluetoothCharacteristic c in service.characteristics) {
+            if (c.uuid == heartRateMeasurementCharUuid) {
+              await c.setNotifyValue(true);
+              
+              StreamSubscription characteristicSubscription = c.lastValueStream.listen((value) {
+                if (value.isEmpty || _isDisposing) return;
+                _processHeartRateData(value);
+              });
+              
+              _streamSubscriptions.add(characteristicSubscription);
+              print('心拍センサーのNotify設定完了');
+              return;
+            }
+          }
+        }
+      }
+      
+      // Huaweiデバイスの場合、カスタムサービスを探す可能性があるため、
+      // ここでは単純に接続成功として扱う
+      if (heartRateDevice!.platformName.toLowerCase().contains('huawei')) {
+        print('Huaweiデバイスが接続されました（カスタムプロトコル）');
+      }
+    } catch (e) {
+      print('心拍センサーセットアップエラー: $e');
+    }
+  }
+  
+  // 心拍データを処理する
+  void _processHeartRateData(List<int> value) {
+    if (value.length < 2) return;
+    
+    // 標準の心拍測定フォーマット
+    // 最初のバイトはフラグ、2番目のバイトが心拍数
+    int flags = value[0];
+    int heartRate = value[1];
+    
+    // 16ビット値の場合
+    if ((flags & 0x01) == 1 && value.length >= 3) {
+      heartRate = value[1] | (value[2] << 8);
+    }
+    
+    setState(() {
+      currentHeartRate = heartRate;
+    });
   }
 
   // 新しいセンサーデータを処理するメソッド
