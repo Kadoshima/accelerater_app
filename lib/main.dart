@@ -4138,19 +4138,52 @@ class _BLEHomePageState extends State<BLEHomePage> {
   Future<void> _setupHeartRateMonitoring() async {
     if (heartRateDevice == null || _isDisposing) return;
     
+    print('=== 心拍センサーセットアップ開始 ===');
+    print('デバイス名: ${heartRateDevice!.platformName}');
+    print('デバイスID: ${heartRateDevice!.remoteId}');
+    
     try {
       List<BluetoothService> services = await heartRateDevice!.discoverServices();
+      print('発見されたサービス数: ${services.length}');
+      
+      // すべてのサービスとキャラクタリスティックをログ出力
+      for (int i = 0; i < services.length; i++) {
+        final service = services[i];
+        print('\nサービス $i: ${service.uuid}');
+        print('  キャラクタリスティック数: ${service.characteristics.length}');
+        
+        for (int j = 0; j < service.characteristics.length; j++) {
+          final char = service.characteristics[j];
+          print('    キャラ $j: ${char.uuid}');
+          print('      プロパティ: 読み取り=${char.properties.read}, '
+                '書き込み=${char.properties.write}, '
+                '通知=${char.properties.notify}');
+        }
+      }
       
       // 標準の心拍サービスを探す
+      bool foundHeartRateService = false;
       for (BluetoothService service in services) {
         if (service.uuid == heartRateServiceUuid) {
+          print('\n標準心拍サービスを発見！');
+          foundHeartRateService = true;
+          
           for (BluetoothCharacteristic c in service.characteristics) {
+            print('  キャラクタリスティック: ${c.uuid}');
+            
             if (c.uuid == heartRateMeasurementCharUuid) {
+              print('  心拍測定キャラクタリスティックを発見！');
+              
+              // 通知を有効化
               await c.setNotifyValue(true);
+              print('  通知を有効化しました');
               
               StreamSubscription characteristicSubscription = c.lastValueStream.listen((value) {
                 if (value.isEmpty || _isDisposing) return;
+                print('心拍データ受信: ${value.length}バイト');
                 _processHeartRateData(value);
+              }, onError: (error) {
+                print('心拍データ受信エラー: $error');
               });
               
               _streamSubscriptions.add(characteristicSubscription);
@@ -4161,33 +4194,115 @@ class _BLEHomePageState extends State<BLEHomePage> {
         }
       }
       
-      // Huaweiデバイスの場合、カスタムサービスを探す可能性があるため、
-      // ここでは単純に接続成功として扱う
-      if (heartRateDevice!.platformName.toLowerCase().contains('huawei')) {
-        print('Huaweiデバイスが接続されました（カスタムプロトコル）');
+      if (!foundHeartRateService) {
+        print('\n標準心拍サービスが見つかりません');
+        
+        // Huaweiデバイスの場合、カスタムサービスを探す
+        if (heartRateDevice!.platformName.toLowerCase().contains('huawei')) {
+          print('Huaweiデバイスが接続されました（カスタムプロトコル）');
+          print('カスタムサービスの検索を試みます...');
+          
+          // 心拍に関連しそうなキャラクタリスティックを探す
+          for (BluetoothService service in services) {
+            for (BluetoothCharacteristic c in service.characteristics) {
+              // 通知可能なキャラクタリスティックをすべて試す
+              if (c.properties.notify) {
+                print('\n通知可能なキャラを発見: ${c.uuid} (サービス: ${service.uuid})');
+                
+                try {
+                  await c.setNotifyValue(true);
+                  
+                  StreamSubscription sub = c.lastValueStream.listen((value) {
+                    if (value.isEmpty || _isDisposing) return;
+                    print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
+                    
+                    // 心拍データの可能性があるパターンをチェック
+                    if (value.length >= 2 && value[1] >= 30 && value[1] <= 220) {
+                      print('  -> 心拍データの可能性あり！');
+                      _processHeartRateData(value);
+                    }
+                  });
+                  
+                  _streamSubscriptions.add(sub);
+                  print('  通知を有効化しました');
+                } catch (e) {
+                  print('  通知有効化エラー: $e');
+                }
+              }
+            }
+          }
+        }
       }
     } catch (e) {
       print('心拍センサーセットアップエラー: $e');
     }
+    
+    print('=== 心拍センサーセットアップ終了 ===');
   }
   
   // 心拍データを処理する
   void _processHeartRateData(List<int> value) {
-    if (value.length < 2) return;
+    if (value.isEmpty) {
+      print('心拍データ処理: 空のデータ');
+      return;
+    }
+    
+    print('\n=== 心拍データ処理 ===');
+    print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
+    print('受信データ(10進数): ${value.join(', ')}');
+    
+    if (value.length < 2) {
+      print('データ長が不足: ${value.length}バイト (最低2バイト必要)');
+      return;
+    }
     
     // 標準の心拍測定フォーマット
     // 最初のバイトはフラグ、2番目のバイトが心拍数
     int flags = value[0];
     int heartRate = value[1];
     
+    print('フラグバイト: 0x${flags.toRadixString(16).padLeft(2, '0')} (${flags.toRadixString(2).padLeft(8, '0')}b)');
+    print('  - 心拍数フォーマット: ${(flags & 0x01) == 1 ? "16ビット" : "8ビット"}');
+    print('  - センサー接触状態: ${(flags & 0x06) >> 1}');
+    print('  - エネルギー消費フィールド: ${(flags & 0x08) != 0 ? "あり" : "なし"}');
+    print('  - RR間隔: ${(flags & 0x10) != 0 ? "あり" : "なし"}');
+    
     // 16ビット値の場合
-    if ((flags & 0x01) == 1 && value.length >= 3) {
-      heartRate = value[1] | (value[2] << 8);
+    if ((flags & 0x01) == 1) {
+      if (value.length >= 3) {
+        heartRate = value[1] | (value[2] << 8);
+        print('16ビット心拍数: $heartRate BPM (0x${value[1].toRadixString(16)}${value[2].toRadixString(16)})');
+      } else {
+        print('エラー: 16ビットフォーマットだがデータ長不足');
+        return;
+      }
+    } else {
+      print('8ビット心拍数: $heartRate BPM');
+    }
+    
+    // エネルギー消費フィールドがある場合
+    int offset = (flags & 0x01) == 1 ? 3 : 2;
+    if ((flags & 0x08) != 0 && value.length > offset + 1) {
+      int energy = value[offset] | (value[offset + 1] << 8);
+      print('エネルギー消費: $energy kJ');
+      offset += 2;
+    }
+    
+    // RR間隔がある場合
+    if ((flags & 0x10) != 0 && value.length > offset + 1) {
+      print('RR間隔データ:');
+      while (offset + 1 < value.length) {
+        int rr = value[offset] | (value[offset + 1] << 8);
+        double rrMs = rr * (1.0 / 1024.0) * 1000;
+        print('  - ${rrMs.toStringAsFixed(1)} ms');
+        offset += 2;
+      }
     }
     
     // 妥当な心拍数の範囲をチェック（30-220 BPM）
     if (heartRate < 30 || heartRate > 220) {
-      print('異常な心拍数を検出: $heartRate BPM');
+      print('警告: 異常な心拍数を検出: $heartRate BPM');
+      print('  -> データを無視します');
       return;
     }
     
@@ -4197,8 +4312,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
       _recentHeartRates.removeAt(0);
     }
     
-    // デバッグ出力
-    print('心拍データ受信: $heartRate BPM (Raw: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')})');
+    print('心拍数を記録: $heartRate BPM');
+    print('履歴: ${_recentHeartRates.join(', ')} BPM');
+    print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+    print('===================');
   }
 
   // 新しいセンサーデータを処理するメソッド
