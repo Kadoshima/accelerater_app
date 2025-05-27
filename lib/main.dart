@@ -264,6 +264,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
   final Guid heartRateMeasurementCharUuid = Guid("00002a37-0000-1000-8000-00805f9b34fb");
   int currentHeartRate = 0;
   bool isHeartRateConnected = false;
+  DateTime? _lastHeartRateUpdate;
+  Timer? _heartRateDisplayTimer;
+  List<int> _recentHeartRates = []; // 最近の心拍数を保持（平滑化用）
 
   // サブスクリプション管理用
   final List<StreamSubscription> _streamSubscriptions = [];
@@ -336,6 +339,19 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // 初期化はデバイス選択後に実施
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showDeviceSelectionDialog();
+    });
+    
+    // 心拍数表示更新タイマー（1Hz）
+    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_recentHeartRates.isNotEmpty && mounted) {
+        // 最近の心拍数の平均を計算（平滑化）
+        int avgHeartRate = (_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).round();
+        
+        setState(() {
+          currentHeartRate = avgHeartRate;
+          _lastHeartRateUpdate = DateTime.now();
+        });
+      }
     });
   }
 
@@ -1156,6 +1172,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
     if (experimentTimer != null) {
       experimentTimer!.cancel();
     }
+    
+    // 心拍数表示タイマーの解放
+    _heartRateDisplayTimer?.cancel();
 
     // 切断処理
     disconnect().then((_) {
@@ -3234,14 +3253,35 @@ class _BLEHomePageState extends State<BLEHomePage> {
                             ),
                           ),
                           const Spacer(),
-                          if (heartRateDevice != null)
-                            Text(
-                              heartRateDevice!.platformName,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey.shade600,
-                              ),
-                            ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              if (heartRateDevice != null)
+                                Text(
+                                  heartRateDevice!.platformName,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                              if (_lastHeartRateUpdate != null)
+                                Text(
+                                  '更新: ${DateTime.now().difference(_lastHeartRateUpdate!).inSeconds}秒前',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade500,
+                                  ),
+                                ),
+                              if (_recentHeartRates.isNotEmpty)
+                                Text(
+                                  'サンプル数: ${_recentHeartRates.length}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade500,
+                                  ),
+                                ),
+                            ],
+                          ),
                         ],
                       ),
                     ],
@@ -4145,9 +4185,20 @@ class _BLEHomePageState extends State<BLEHomePage> {
       heartRate = value[1] | (value[2] << 8);
     }
     
-    setState(() {
-      currentHeartRate = heartRate;
-    });
+    // 妥当な心拍数の範囲をチェック（30-220 BPM）
+    if (heartRate < 30 || heartRate > 220) {
+      print('異常な心拍数を検出: $heartRate BPM');
+      return;
+    }
+    
+    // 最近の心拍数リストに追加（平滑化用）
+    _recentHeartRates.add(heartRate);
+    if (_recentHeartRates.length > 5) {
+      _recentHeartRates.removeAt(0);
+    }
+    
+    // デバッグ出力
+    print('心拍データ受信: $heartRate BPM (Raw: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')})');
   }
 
   // 新しいセンサーデータを処理するメソッド
