@@ -268,6 +268,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   DateTime? _lastHeartRateUpdate;
   Timer? _heartRateDisplayTimer;
   List<int> _recentHeartRates = []; // 最近の心拍数を保持（平滑化用）
+  DateTime? _lastHeartRateReceived; // 最後に心拍データを受信した時刻
 
   // サブスクリプション管理用
   final List<StreamSubscription> _streamSubscriptions = [];
@@ -350,14 +351,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
       _showDeviceSelectionDialog();
     });
     
-    // 心拍数表示更新タイマー（1Hz）
-    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    // 心拍数表示更新タイマー（3秒ごと）
+    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (_recentHeartRates.isNotEmpty && mounted) {
-        // 最近の心拍数の平均を計算（平滑化）
-        int avgHeartRate = (_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).round();
-        
+        // 最新の心拍数を使用（平均ではなく最新値）
         setState(() {
-          currentHeartRate = avgHeartRate;
+          currentHeartRate = _recentHeartRates.last;
           _lastHeartRateUpdate = DateTime.now();
         });
       }
@@ -4359,16 +4358,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
       
       // 妥当な心拍数の範囲をチェック（30-220 BPM）
       if (heartRate >= 30 && heartRate <= 220) {
-        // 最近の心拍数リストに追加（平滑化用）
-        _recentHeartRates.add(heartRate);
-        if (_recentHeartRates.length > 5) {
-          _recentHeartRates.removeAt(0);
+        // 重複データを避ける
+        final now = DateTime.now();
+        if (_lastHeartRateReceived == null || 
+            now.difference(_lastHeartRateReceived!).inMilliseconds > 500) {
+          
+          // 最近の心拍数リストに追加
+          _recentHeartRates.add(heartRate);
+          if (_recentHeartRates.length > 3) {  // バッファサイズを3に減らす
+            _recentHeartRates.removeAt(0);
+          }
+          _lastHeartRateReceived = now;
+          
+          // デバッグ出力（必要に忌てコメントアウト）
+          // print('心拍数を記録: $heartRate BPM');
+          // print('履歴: ${_recentHeartRates.join(', ')} BPM');
         }
-        
-        // デバッグ出力（必要に忌てコメントアウト）
-        // print('心拍数を記録: $heartRate BPM');
-        // print('履歴: ${_recentHeartRates.join(', ')} BPM');
-        // print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
       } else {
         print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');
       }
