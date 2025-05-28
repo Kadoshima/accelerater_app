@@ -49,6 +49,9 @@ class ExperimentController {
 
   /// 最新の検出SPM
   double _currentSpm = 0.0;
+  
+  /// 最新の心拍数
+  int _currentHeartRate = 0;
 
   ExperimentController({
     required GaitAnalysisService gaitAnalysisService,
@@ -71,6 +74,11 @@ class ExperimentController {
   /// 現在のテンポを取得
   double get currentTempo =>
       _useNativeMetronome ? _nativeMetronome.currentBpm : _metronome.currentBpm;
+      
+  /// 心拍数を更新
+  void updateHeartRate(int heartRate) {
+    _currentHeartRate = heartRate;
+  }
 
   /// 実験セッションを開始
   Future<void> startExperiment({
@@ -105,9 +113,9 @@ class ExperimentController {
     // 準備フェーズから開始
     _startCurrentPhase();
 
-    // データ記録タイマーを開始（2秒ごと）
+    // データ記録タイマーを開始（1秒ごと = 1Hz）
     _dataRecordingTimer?.cancel();
-    _dataRecordingTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    _dataRecordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _recordTimeSeriesData();
     });
   }
@@ -576,6 +584,7 @@ class ExperimentController {
       'isPlaying': isPlaying,
       'currentTempo': currentTempo,
       'inductionStepIndex': _currentInductionStepIndex,
+      'currentHeartRate': _currentHeartRate,
     };
 
     // データを記録

@@ -13,6 +13,9 @@ class TabletDashboard extends StatefulWidget {
   final double maxY;
   final double maxX;
   final int currentHeartRate;
+  final List<FlSpot> heartRateSpots;
+  final double minHeartRate;
+  final double maxHeartRate;
 
   const TabletDashboard({
     Key? key,
@@ -24,6 +27,9 @@ class TabletDashboard extends StatefulWidget {
     required this.maxY,
     required this.maxX,
     required this.currentHeartRate,
+    this.heartRateSpots = const [],
+    this.minHeartRate = 40.0,
+    this.maxHeartRate = 180.0,
   }) : super(key: key);
 
   @override
@@ -261,31 +267,64 @@ class _TabletDashboardState extends State<TabletDashboard> {
               ],
             ),
           ),
-          // 右側：グラフ
+          // 右側：グラフ（上下分割）
           Expanded(
             flex: 4,
-            child: Card(
-              elevation: 2,
-              margin: const EdgeInsets.all(8),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '歩行ピッチ推移',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+            child: Column(
+              children: [
+                // 上段：歩行ピッチ推移
+                Expanded(
+                  child: Card(
+                    elevation: 2,
+                    margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '歩行ピッチ推移',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Expanded(
+                            child: _buildChart(),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    Expanded(
-                      child: _buildChart(),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+                // 下段：心拍数推移
+                Expanded(
+                  child: Card(
+                    elevation: 2,
+                    margin: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '心拍数推移',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Expanded(
+                            child: _buildHeartRateChart(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -507,5 +546,79 @@ class _TabletDashboardState extends State<TabletDashboard> {
     String minutes = twoDigits(duration.inMinutes.remainder(60));
     String seconds = twoDigits(duration.inSeconds.remainder(60));
     return '$minutes:$seconds';
+  }
+  
+  Widget _buildHeartRateChart() {
+    return LineChart(
+      LineChartData(
+        minX: 0,
+        maxX: widget.maxX,
+        minY: widget.minHeartRate,
+        maxY: widget.maxHeartRate,
+        lineBarsData: [
+          LineChartBarData(
+            spots: widget.heartRateSpots,
+            isCurved: true,
+            color: Colors.red,
+            barWidth: 3,
+            isStrokeCapRound: true,
+            dotData: FlDotData(show: false),
+            belowBarData: BarAreaData(
+              show: true,
+              color: Colors.red.withOpacity(0.1),
+            ),
+          ),
+        ],
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              interval: 20,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  value.toInt().toString(),
+                  style: const TextStyle(fontSize: 12),
+                );
+              },
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              interval: 5,
+              getTitlesWidget: (value, meta) {
+                return Text(
+                  '${value.toInt()}分',
+                  style: const TextStyle(fontSize: 12),
+                );
+              },
+            ),
+          ),
+          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(
+          show: true,
+          border: Border.all(color: Colors.grey, width: 1),
+        ),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: true,
+          drawHorizontalLine: true,
+          getDrawingHorizontalLine: (value) {
+            return FlLine(
+              color: Colors.grey.withOpacity(0.3),
+              strokeWidth: 1,
+            );
+          },
+          getDrawingVerticalLine: (value) {
+            return FlLine(
+              color: Colors.grey.withOpacity(0.3),
+              strokeWidth: 1,
+            );
+          },
+        ),
+      ),
+    );
   }
 }

@@ -1221,7 +1221,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
           ),
         );
       }
-      
+
       return ExperimentScreen(
         gaitAnalysisService: gaitAnalysisService!,
         metronome: _metronome,
@@ -1539,6 +1539,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
       'phase': phaseNameEn,
       'targetBPM': targetPitch > 0 ? targetPitch : 0.0,
       'currentSPM': _displaySpm > 0 ? _displaySpm : 0.0,
+      'currentHeartRate': currentHeartRate,
       'phaseStableSeconds': phaseStableSeconds,
       'pitchIncreaseCount': pitchIncreaseCount,
       'isPlaying': isPlaying,

@@ -37,8 +37,8 @@ class GaitAnalysisService {
 
   /// コンストラクタ
   GaitAnalysisService({
-    this.totalDataSeconds = 20, // 25秒分のデータを保持（ウィンドウサイズに合わせて増加）
-    this.windowSizeSeconds = 10, // 15秒のウィンドウでFFT計算（最大精度優先）
+    this.totalDataSeconds = 15, // 15秒分のデータを保持
+    this.windowSizeSeconds = 5, // 5秒のウィンドウでFFT計算（バランス重視）
     this.slideIntervalSeconds = 1, // 1秒ごとにスライド
     this.minFrequency = 1.0, // 最小周波数 1.0Hz (60 SPM)
     this.maxFrequency = 3.50, // 最大周波数 2.67Hz (160 SPM)

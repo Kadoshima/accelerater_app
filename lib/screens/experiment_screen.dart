@@ -69,7 +69,12 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
   final List<FlSpot> _targetSpots = [];
   double _minY = 40.0;
   double _maxY = 160.0;
-  double _maxX = 60.0;
+  double _maxX = 1.0;  // 初期値を1分に設定
+  
+  // 心拍数グラフデータ
+  final List<FlSpot> _heartRateSpots = [];
+  double _minHeartRate = 40.0;
+  double _maxHeartRate = 180.0;
 
   // アンケート回答
   int _fatigueLevel = 3;
@@ -145,12 +150,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       final targetSpm = data['targetSPM'] as double;
 
       if (currentSpm > 0) {
-        // 直近のポイントの更新か新規追加
-        if (_spmSpots.isNotEmpty && _spmSpots.last.x >= time - 0.1) {
-          _spmSpots[_spmSpots.length - 1] = FlSpot(time, currentSpm);
-        } else {
-          _spmSpots.add(FlSpot(time, currentSpm));
-        }
+        // 1Hzで記録されるデータを追加（毎秒新しい点を追加）
+        _spmSpots.add(FlSpot(time, currentSpm));
 
         // 古いデータの削除（60分以上前）
         while (_spmSpots.isNotEmpty && time - _spmSpots.first.x > 60) {
@@ -163,10 +164,8 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       }
 
       if (targetSpm > 0) {
-        // 目標SPMの更新
-        if (_targetSpots.isNotEmpty && _targetSpots.last.x >= time - 0.1) {
-          _targetSpots[_targetSpots.length - 1] = FlSpot(time, targetSpm);
-        } else {
+        // 目標SPMの更新（値が変わった時のみ新しい点を追加）
+        if (_targetSpots.isEmpty || _targetSpots.last.y != targetSpm) {
           _targetSpots.add(FlSpot(time, targetSpm));
         }
 
@@ -176,8 +175,28 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
         }
       }
 
-      // X軸の範囲を調整
-      _maxX = math.max(time + 1, 10.0);
+      // 心拍数データの更新
+      final currentHeartRate = (data['currentHeartRate'] as int?) ?? 0;
+      if (currentHeartRate > 0) {
+        _heartRateSpots.add(FlSpot(time, currentHeartRate.toDouble()));
+        
+        // 古いデータの削除（60分以上前）
+        while (_heartRateSpots.isNotEmpty && time - _heartRateSpots.first.x > 60) {
+          _heartRateSpots.removeAt(0);
+        }
+        
+        // Y軸の範囲を調整
+        if (currentHeartRate < _minHeartRate) _minHeartRate = math.max(40, currentHeartRate - 10);
+        if (currentHeartRate > _maxHeartRate) _maxHeartRate = math.min(220, currentHeartRate + 10);
+      }
+
+      // X軸の範囲を調整（切り上げ式の可変範囲）
+      // 経過時間に応じて1分単位で切り上げ
+      if (time <= 1.0) {
+        _maxX = 1.0;  // 1分以内は1分表示
+      } else {
+        _maxX = (time + 0.5).ceilToDouble();  // 0.5分の余裕を持って切り上げ
+      }
     });
   }
 
@@ -362,6 +381,9 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                     maxY: _maxY,
                     maxX: _maxX,
                     currentHeartRate: widget.currentHeartRate,
+                    heartRateSpots: _heartRateSpots,
+                    minHeartRate: _minHeartRate,
+                    maxHeartRate: _maxHeartRate,
                   )
                 : const Center(
                     child: CircularProgressIndicator(),
