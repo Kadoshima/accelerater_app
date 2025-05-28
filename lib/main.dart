@@ -4180,7 +4180,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
               
               StreamSubscription characteristicSubscription = c.lastValueStream.listen((value) {
                 if (value.isEmpty || _isDisposing) return;
-                print('心拍データ受信: ${value.length}バイト');
+                // print('心拍データ受信: ${value.length}バイト');  // デバッグ用
                 _processHeartRateData(value);
               }, onError: (error) {
                 print('心拍データ受信エラー: $error');
@@ -4214,19 +4214,20 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   
                   StreamSubscription sub = c.lastValueStream.listen((value) {
                     if (value.isEmpty || _isDisposing) return;
-                    print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
+                    // デバッグ用（必要に応じてコメントアウト）
+                    // print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
                     
                     // Huaweiカスタムプロトコルをチェック（ヘッダー: 5a 00）
                     if (value.length >= 10 && value[0] == 0x5a && value[1] == 0x00) {
                       int command = value.length >= 5 ? value[4] : 0;
                       if (command == 0x09) {  // 心拍データコマンド
-                        print('  -> Huawei心拍データ検出！');
+                        // print('  -> Huawei心拍データ検出！');  // デバッグ用
                         _processHeartRateData(value);
                       }
                     }
                     // その他の心拍データの可能性があるパターンをチェック
                     else if (value.length >= 2 && value[1] >= 30 && value[1] <= 220) {
-                      print('  -> 心拍データの可能性あり！');
+                      // print('  -> 心拍データの可能性あり！');  // デバッグ用
                       _processHeartRateData(value);
                     }
                   });
@@ -4255,27 +4256,28 @@ class _BLEHomePageState extends State<BLEHomePage> {
       return;
     }
     
-    print('\n=== 心拍データ処理 ===');
-    print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
-    print('受信データ(10進数): ${value.join(', ')}');
+    // デバッグ出力（必要に応じてコメントアウト）
+    // print('\n=== 心拍データ処理 ===');
+    // print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
+    // print('受信データ(10進数): ${value.join(', ')}');
     
     // Huaweiカスタムプロトコルのチェック
     if (value.length >= 4 && value[0] == 0x5a && value[1] == 0x00) {
-      print('Huaweiカスタムプロトコル検出');
+      // print('Huaweiカスタムプロトコル検出');  // デバッグ用
       
       // パケット長を取得（リトルエンディアン）
       int payloadLength = value[2] | (value[3] << 8);
-      print('ペイロード長: $payloadLength バイト');
+      // print('ペイロード長: $payloadLength バイト');  // デバッグ用
       
       if (value.length >= 6) {
         int command = value[4];
         int subCommand = value[5];
-        print('コマンド: 0x${command.toRadixString(16)}, サブコマンド: 0x${subCommand.toRadixString(16)}');
+        // print('コマンド: 0x${command.toRadixString(16)}, サブコマンド: 0x${subCommand.toRadixString(16)}');  // デバッグ用
         
         // 心拍数パケット（コマンド 0x09）
         if (command == 0x09 && value.length >= 10) {
           int heartRate = value[9];  // 9番目のバイトが心拍数
-          print('Huaweiプロトコル心拍数: $heartRate BPM');
+          // print('Huaweiプロトコル心拍数: $heartRate BPM');  // デバッグ用
           
           // 妥当な心拍数の範囲をチェック（30-220 BPM）
           if (heartRate >= 30 && heartRate <= 220) {
@@ -4285,40 +4287,42 @@ class _BLEHomePageState extends State<BLEHomePage> {
               _recentHeartRates.removeAt(0);
             }
             
-            print('心拍数を記録: $heartRate BPM');
-            print('履歴: ${_recentHeartRates.join(', ')} BPM');
-            print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+            // デバッグ出力（必要に応じてコメントアウト）
+            // print('心拍数を記録: $heartRate BPM');
+            // print('履歴: ${_recentHeartRates.join(', ')} BPM');
+            // print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
           } else {
-            print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');
+            print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');  // この警告は残す
           }
         } else {
-          print('その他のデータパケット（コマンド: 0x${command.toRadixString(16)}）');
+          // print('その他のデータパケット（コマンド: 0x${command.toRadixString(16)}）');  // デバッグ用
         }
       }
     } else if (value.length >= 2) {
       // 標準BLE心拍測定フォーマットを試行
-      print('標準BLE心拍測定フォーマットとして処理を試行');
+      // print('標準BLE心拍測定フォーマットとして処理を試行');  // デバッグ用
       
       int flags = value[0];
       int heartRate = value[1];
       
-      print('フラグバイト: 0x${flags.toRadixString(16).padLeft(2, '0')} (${flags.toRadixString(2).padLeft(8, '0')}b)');
-      print('  - 心拍数フォーマット: ${(flags & 0x01) == 1 ? "16ビット" : "8ビット"}');
-      print('  - センサー接触状態: ${(flags & 0x06) >> 1}');
-      print('  - エネルギー消費フィールド: ${(flags & 0x08) != 0 ? "あり" : "なし"}');
-      print('  - RR間隔: ${(flags & 0x10) != 0 ? "あり" : "なし"}');
+      // デバッグ出力（必要に応じてコメントアウト）
+      // print('フラグバイト: 0x${flags.toRadixString(16).padLeft(2, '0')} (${flags.toRadixString(2).padLeft(8, '0')}b)');
+      // print('  - 心拍数フォーマット: ${(flags & 0x01) == 1 ? "16ビット" : "8ビット"}');
+      // print('  - センサー接触状態: ${(flags & 0x06) >> 1}');
+      // print('  - エネルギー消費フィールド: ${(flags & 0x08) != 0 ? "あり" : "なし"}');
+      // print('  - RR間隔: ${(flags & 0x10) != 0 ? "あり" : "なし"}');
       
       // 16ビット値の場合
       if ((flags & 0x01) == 1) {
         if (value.length >= 3) {
           heartRate = value[1] | (value[2] << 8);
-          print('16ビット心拍数: $heartRate BPM');
+          // print('16ビット心拍数: $heartRate BPM');  // デバッグ用
         } else {
-          print('エラー: 16ビットフォーマットだがデータ長不足');
+          // print('エラー: 16ビットフォーマットだがデータ長不足');  // デバッグ用
           return;
         }
       } else {
-        print('8ビット心拍数: $heartRate BPM');
+        // print('8ビット心拍数: $heartRate BPM');  // デバッグ用
       }
       
       // 妥当な心拍数の範囲をチェック（30-220 BPM）
@@ -4329,17 +4333,18 @@ class _BLEHomePageState extends State<BLEHomePage> {
           _recentHeartRates.removeAt(0);
         }
         
-        print('心拍数を記録: $heartRate BPM');
-        print('履歴: ${_recentHeartRates.join(', ')} BPM');
-        print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+        // デバッグ出力（必要に忌てコメントアウト）
+        // print('心拍数を記録: $heartRate BPM');
+        // print('履歴: ${_recentHeartRates.join(', ')} BPM');
+        // print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
       } else {
         print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');
       }
     } else {
-      print('データ長が不足: ${value.length}バイト');
+      // print('データ長が不足: ${value.length}バイト');  // デバッグ用
     }
     
-    print('===================');
+    // print('===================');  // デバッグ用
   }
 
   // 新しいセンサーデータを処理するメソッド
