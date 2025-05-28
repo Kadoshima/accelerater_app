@@ -4167,6 +4167,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
         if (service.uuid == heartRateServiceUuid) {
           print('\n標準心拍サービスを発見！');
           foundHeartRateService = true;
+          foundHeartRateService = true;
           
           for (BluetoothCharacteristic c in service.characteristics) {
             print('  キャラクタリスティック: ${c.uuid}');
@@ -4180,7 +4181,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
               
               StreamSubscription characteristicSubscription = c.lastValueStream.listen((value) {
                 if (value.isEmpty || _isDisposing) return;
-                // print('心拍データ受信: ${value.length}バイト');  // デバッグ用
+                print('心拍データ受信: ${value.length}バイト');
                 _processHeartRateData(value);
               }, onError: (error) {
                 print('心拍データ受信エラー: $error');
@@ -4188,7 +4189,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
               
               _streamSubscriptions.add(characteristicSubscription);
               print('心拍センサーのNotify設定完了');
-              return;
+              // returnを削除して、他のサービスも設定を続ける
+              // return;
             }
           }
         }
@@ -4214,8 +4216,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   
                   StreamSubscription sub = c.lastValueStream.listen((value) {
                     if (value.isEmpty || _isDisposing) return;
-                    // デバッグ用（必要に応じてコメントアウト）
-                    // print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
+                    print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
                     
                     // Huaweiカスタムプロトコルをチェック（ヘッダー: 5a 00）
                     if (value.length >= 10 && value[0] == 0x5a && value[1] == 0x00) {
@@ -4256,10 +4257,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
       return;
     }
     
-    // デバッグ出力（必要に応じてコメントアウト）
-    // print('\n=== 心拍データ処理 ===');
-    // print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
-    // print('受信データ(10進数): ${value.join(', ')}');
+    print('\n=== 心拍データ処理 ===');
+    print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
+    print('受信データ(10進数): ${value.join(', ')}');
     
     // Huaweiカスタムプロトコルのチェック
     if (value.length >= 4 && value[0] == 0x5a && value[1] == 0x00) {
