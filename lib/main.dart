@@ -360,14 +360,15 @@ class _BLEHomePageState extends State<BLEHomePage> {
       _showDeviceSelectionDialog();
     });
 
-    // 心拍数表示更新タイマー（1秒ごと）
-    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_recentHeartRates.isNotEmpty && mounted) {
-        // 最新の心拍数を使用（平均ではなく最新値）
-        setState(() {
-          currentHeartRate = _recentHeartRates.last;
-          _lastHeartRateUpdate = DateTime.now();
-        });
+    // 心拍数表示更新タイマー（3秒ごと）- 表示の更新確認用
+    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted && _lastHeartRateUpdate != null) {
+        // 5秒以上更新がない場合は心拍数をリセット
+        if (DateTime.now().difference(_lastHeartRateUpdate!).inSeconds > 5) {
+          setState(() {
+            currentHeartRate = 0;
+          });
+        }
       }
     });
   }
@@ -1212,12 +1213,22 @@ class _BLEHomePageState extends State<BLEHomePage> {
   Widget build(BuildContext context) {
     // タブレットの場合は直接情報表示画面（新実験モード）へ
     if (ResponsiveHelper.isTablet(context)) {
+      // gaitAnalysisServiceがnullの場合はローディング画面を表示
+      if (gaitAnalysisService == null) {
+        return const Scaffold(
+          body: Center(
+            child: CircularProgressIndicator(),
+          ),
+        );
+      }
+      
       return ExperimentScreen(
-        gaitAnalysisService: gaitAnalysisService,
+        gaitAnalysisService: gaitAnalysisService!,
         metronome: _metronome,
         nativeMetronome: _nativeMetronome,
         useNativeMetronome: _useNativeMetronome,
         isBluetoothConnected: targetDevice != null,
+        currentHeartRate: currentHeartRate,
         onBluetoothSettings: () {
           _showDeviceSelectionDialog();
         },
@@ -4406,7 +4417,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
         // 重複データを避ける
         final now = DateTime.now();
         if (_lastHeartRateReceived == null ||
-            now.difference(_lastHeartRateReceived!).inMilliseconds > 500) {
+            now.difference(_lastHeartRateReceived!).inMilliseconds > 200) {
           // 最近の心拍数リストに追加
           _recentHeartRates.add(heartRate);
           if (_recentHeartRates.length > 3) {
@@ -4415,7 +4426,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
           }
           _lastHeartRateReceived = now;
 
-          // UIを更新
+          // UIを更新（直接更新）
           if (mounted) {
             setState(() {
               currentHeartRate = heartRate;

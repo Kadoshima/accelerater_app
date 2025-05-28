@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'dart:math' as math;
 import '../models/experiment_models.dart';
 import '../services/experiment_controller.dart';
 import '../utils/responsive_helper.dart';
@@ -13,6 +12,7 @@ class TabletDashboard extends StatefulWidget {
   final double minY;
   final double maxY;
   final double maxX;
+  final int currentHeartRate;
 
   const TabletDashboard({
     Key? key,
@@ -23,6 +23,7 @@ class TabletDashboard extends StatefulWidget {
     required this.minY,
     required this.maxY,
     required this.maxX,
+    required this.currentHeartRate,
   }) : super(key: key);
 
   @override
@@ -30,23 +31,11 @@ class TabletDashboard extends StatefulWidget {
 }
 
 class _TabletDashboardState extends State<TabletDashboard> {
-  // モック心拍数データ
-  double mockHeartRate = 75.0;
   List<FlSpot> heartRateSpots = [];
   
   @override
   void initState() {
     super.initState();
-    _generateMockHeartRate();
-  }
-
-  void _generateMockHeartRate() {
-    // 歩行ピッチに連動した心拍数を生成
-    final currentSpm = widget.controller.getCurrentSpm();
-    final baseHR = 70.0;
-    final variation = (currentSpm - 100) * 0.3; // SPMに応じて変動
-    mockHeartRate = baseHR + variation + (math.Random().nextDouble() * 10 - 5);
-    mockHeartRate = mockHeartRate.clamp(60, 150);
   }
 
   String _getAIAdvice() {
@@ -90,7 +79,6 @@ class _TabletDashboardState extends State<TabletDashboard> {
     final remainingSeconds = widget.session.getRemainingSeconds();
     final progress = widget.session.getPhaseProgress();
 
-    _generateMockHeartRate(); // 心拍数を更新
 
     return Container(
       color: Colors.grey[100],
@@ -124,11 +112,11 @@ class _TabletDashboardState extends State<TabletDashboard> {
                       Expanded(
                         child: _buildMetricCard(
                           title: '心拍数',
-                          value: mockHeartRate.toStringAsFixed(0),
+                          value: widget.currentHeartRate.toString(),
                           unit: 'BPM',
                           icon: Icons.favorite,
                           color: Colors.red,
-                          subtitle: _getHeartRateZone(mockHeartRate),
+                          subtitle: _getHeartRateZone(widget.currentHeartRate.toDouble()),
                         ),
                       ),
                     ],

@@ -19,6 +19,7 @@ class ExperimentScreen extends StatefulWidget {
   final bool useNativeMetronome;
   final bool isBluetoothConnected;
   final VoidCallback? onBluetoothSettings;
+  final int currentHeartRate;
 
   const ExperimentScreen({
     Key? key,
@@ -28,6 +29,7 @@ class ExperimentScreen extends StatefulWidget {
     this.useNativeMetronome = true,
     this.isBluetoothConnected = false,
     this.onBluetoothSettings,
+    this.currentHeartRate = 0,
   }) : super(key: key);
 
   @override
@@ -359,6 +361,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
                     minY: _minY,
                     maxY: _maxY,
                     maxX: _maxX,
+                    currentHeartRate: widget.currentHeartRate,
                   )
                 : const Center(
                     child: CircularProgressIndicator(),
