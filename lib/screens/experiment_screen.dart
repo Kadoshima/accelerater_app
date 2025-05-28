@@ -97,6 +97,18 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       onPhaseChange: _handlePhaseChange,
       onDataRecorded: _handleDataRecorded,
     );
+    
+    // 初期心拍数を設定
+    _experimentController.updateHeartRate(widget.currentHeartRate);
+  }
+
+  @override
+  void didUpdateWidget(ExperimentScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 心拍数が更新されたらExperimentControllerに通知
+    if (widget.currentHeartRate != oldWidget.currentHeartRate) {
+      _experimentController.updateHeartRate(widget.currentHeartRate);
+    }
   }
 
   @override
@@ -179,6 +191,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       final currentHeartRate = (data['currentHeartRate'] as int?) ?? 0;
       if (currentHeartRate > 0) {
         _heartRateSpots.add(FlSpot(time, currentHeartRate.toDouble()));
+        print('心拍数グラフ更新: 時間=${time.toStringAsFixed(2)}分, 心拍数=$currentHeartRate BPM, データ点数=${_heartRateSpots.length}');
         
         // 古いデータの削除（60分以上前）
         while (_heartRateSpots.isNotEmpty && time - _heartRateSpots.first.x > 60) {
