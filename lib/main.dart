@@ -4181,7 +4181,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
               
               StreamSubscription characteristicSubscription = c.lastValueStream.listen((value) {
                 if (value.isEmpty || _isDisposing) return;
-                print('心拍データ受信: ${value.length}バイト');
+                // print('心拍データ受信: ${value.length}バイト');  // デバッグ用
                 _processHeartRateData(value);
               }, onError: (error) {
                 print('心拍データ受信エラー: $error');
@@ -4216,7 +4216,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   
                   StreamSubscription sub = c.lastValueStream.listen((value) {
                     if (value.isEmpty || _isDisposing) return;
-                    print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
+                    // print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');  // デバッグ用
                     
                     // Huaweiカスタムプロトコルをチェック（ヘッダー: 5a 00）
                     if (value.length >= 10 && value[0] == 0x5a && value[1] == 0x00) {
@@ -4257,9 +4257,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
       return;
     }
     
-    print('\n=== 心拍データ処理 ===');
-    print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
-    print('受信データ(10進数): ${value.join(', ')}');
+    // デバッグ出力（必要に応じてコメントアウト）
+    // print('\n=== 心拍データ処理 ===');
+    // print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
+    // print('受信データ(10進数): ${value.join(', ')}');
     
     // Huaweiカスタムプロトコルのチェック
     if (value.length >= 4 && value[0] == 0x5a && value[1] == 0x00) {
