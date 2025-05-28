@@ -242,7 +242,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   double pitchIncrementStep = 5.0; // ピッチ増加ステップ
 
   // 歩行解析サービス
-  late final GaitAnalysisService gaitAnalysisService;
+  GaitAnalysisService? gaitAnalysisService;
 
   // UI表示用変数
   double _displaySpm = 0.0; // 表示するSPM
@@ -266,7 +266,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   bool isHeartRateConnected = false;
   DateTime? _lastHeartRateUpdate;
   Timer? _heartRateDisplayTimer;
-  List<int> _recentHeartRates = []; // 最近の心拍数を保持（平滑化用）
+  final List<int> _recentHeartRates = []; // 最近の心拍数を保持（平滑化用）
   DateTime? _lastHeartRateReceived; // 最後に心拍データを受信した時刻
 
   // サブスクリプション管理用
@@ -280,7 +280,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   final List<ScanResult> _scanResults = [];
 
   // スマホ加速度センサー利用フラグとサブスクリプション
-  bool _usePhoneSensor = false;
+  final bool _usePhoneSensor = false;
   StreamSubscription<AccelerometerEvent>? _phoneSensorSubscription;
 
   // RAWデータグラフ用
@@ -334,6 +334,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
       print(details.stack);
     };
 
+    // 歩行解析サービスを即座に初期化
+    gaitAnalysisService = GaitAnalysisService();
+    
+    // メトロノームを即座に初期化
+    _metronome = Metronome();
+    _nativeMetronome = NativeMetronome();
+
     // 位置情報の権限を確認・リクエスト
     _checkLocationPermission();
 
@@ -342,8 +349,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
       _showDeviceSelectionDialog();
     });
     
-    // 心拍数表示更新タイマー（3秒ごと）
-    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    // 心拍数表示更新タイマー（1秒ごと）
+    _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_recentHeartRates.isNotEmpty && mounted) {
         // 最新の心拍数を使用（平均ではなく最新値）
         setState(() {
@@ -449,10 +456,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // コンポーネントを初期化する
   Future<void> _initializeComponents() async {
     try {
-      // 歩行解析サービスの初期化
-      gaitAnalysisService =
-          GaitAnalysisService(); // 新しいアルゴリズムではsamplingRateが不要になりました
-
       // メトロノームサービスの初期化（改善版）
       await _initializeMetronomes();
 
@@ -820,9 +823,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 実験データを記録 (SPMを記録するように変更)
   void _recordExperimentData() {
     // 最新の歩行解析結果を取得
-    double detectedSpm = gaitAnalysisService.currentSpm; // SPMを取得
+    double detectedSpm = gaitAnalysisService?.currentSpm ?? 0.0; // SPMを取得
     // 信頼度値も取得
-    double reliability = gaitAnalysisService.reliability;
+    double reliability = gaitAnalysisService?.reliability ?? 0.0;
 
     // 最新のセンサーデータ
     double? accX = latestData?.accX;
@@ -916,20 +919,24 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // Azureにデータをアップロード
     try {
       await _uploadDataToAzure(csvData);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('データがAzureに自動アップロードされました'),
-          duration: Duration(seconds: 3),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('データがAzureに自動アップロードされました'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     } catch (e) {
       print('Azureアップロードエラー: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Azureへのアップロードに失敗しました: $e'),
           duration: const Duration(seconds: 3),
         ),
       );
+      }
     }
 
     // 実験データをクリア
@@ -1214,23 +1221,49 @@ class _BLEHomePageState extends State<BLEHomePage> {
             icon: const Icon(Icons.science),
             tooltip: '新実験モード',
             onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => ExperimentScreen(
-                    gaitAnalysisService: gaitAnalysisService,
-                    metronome: _metronome,
-                    nativeMetronome: _nativeMetronome,
-                    useNativeMetronome: _useNativeMetronome,
+              if (gaitAnalysisService != null) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ExperimentScreen(
+                      gaitAnalysisService: gaitAnalysisService!,
+                      metronome: _metronome,
+                      nativeMetronome: _nativeMetronome,
+                      useNativeMetronome: _useNativeMetronome,
+                    ),
                   ),
-                ),
-              );
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('初期化中です。しばらくお待ちください。'),
+                  ),
+                );
+              }
             },
           ),
         ],
       ),
       body: Column(
         children: [
+          // 位置情報エラーメッセージ
+          if (_locationErrorMessage.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.all(8),
+              color: Colors.amber.shade100,
+              child: Row(
+                children: [
+                  const Icon(Icons.warning, color: Colors.amber),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _locationErrorMessage,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Bluetooth接続ステータス - 常に表示
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1379,9 +1412,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
         ],
       ),
     );
-  }
+  }  // This closes the build() method
 
-  // 本実験を初期化する
+  // 本実験を初期化する  
   void _initializeRealExperiment() {
     // フェーズを初期状態にリセット
     currentPhase = ExperimentPhase.freeWalking;
@@ -1669,7 +1702,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     if (!mounted) return;
 
     // 現在の歩行ピッチを取得
-    double currentPitch = gaitAnalysisService.currentSpm;
+    double currentPitch = gaitAnalysisService?.currentSpm ?? 0.0;
 
     // 有効な歩行ピッチがない場合はスキップ
     if (currentPitch <= 0) return;
@@ -2156,8 +2189,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
       case ExperimentPhase.pitchIncreasing:
         return Colors.purple;
     }
-    // デフォルト値を返す（コンパイラエラー回避のため）
-    return Colors.grey;
   }
 
   // フェーズに応じたアイコンを取得
@@ -2170,8 +2201,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
       case ExperimentPhase.pitchIncreasing:
         return Icons.trending_up;
     }
-    // デフォルト値を返す（コンパイラエラー回避のため）
-    return Icons.help_outline;
   }
 
   // フェーズ名を取得
@@ -2184,8 +2213,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
       case ExperimentPhase.pitchIncreasing:
         return 'ピッチ増加フェーズ';
     }
-    // デフォルト値を返す（コンパイラエラー回避のため）
-    return '不明なフェーズ';
   }
 
   // フェーズ情報コンテンツを構築
@@ -2260,8 +2287,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
           ],
         );
     }
-    // デフォルト値を返す（コンパイラエラー回避のため）
-    return const SizedBox.shrink();
   }
 
   // ピッチ進捗に応じた色を取得
@@ -3178,26 +3203,23 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     const SizedBox(height: 16),
                     _buildInfoRow(
                         'SPM (歩行ピッチ):',
-                        gaitAnalysisService.currentSpm > 0.1
-                            ? gaitAnalysisService.currentSpm.toStringAsFixed(1)
+                        (gaitAnalysisService?.currentSpm ?? 0.0) > 0.1
+                            ? gaitAnalysisService!.currentSpm.toStringAsFixed(1)
                             : '--'),
                     _buildInfoRow('ピーク検出アルゴリズム:', 'トレンド除去+標準偏差閾値方式'),
                     _buildInfoRow('信頼度スコア:',
-                        '${(gaitAnalysisService.reliability * 100).toStringAsFixed(1)}%'),
+                        '${((gaitAnalysisService?.reliability ?? 0.0) * 100).toStringAsFixed(1)}%'),
                     const SizedBox(height: 8),
                     const Text('直近ステップ間隔 (ms):',
                         style: TextStyle(fontWeight: FontWeight.bold)),
                     Text(
-                      gaitAnalysisService
-                              .getLatestStepIntervals()
-                              .map((iv) => iv.toStringAsFixed(0))
-                              .join(', ')
-                              .isEmpty
-                          ? '--'
-                          : gaitAnalysisService
-                              .getLatestStepIntervals()
-                              .map((iv) => iv.toStringAsFixed(0))
-                              .join(', '),
+                      () {
+                        final intervals = gaitAnalysisService?.getLatestStepIntervals() ?? [];
+                        if (intervals.isEmpty) {
+                          return '--';
+                        }
+                        return intervals.map((iv) => iv.toStringAsFixed(0)).join(', ');
+                      }(),
                       style: const TextStyle(fontSize: 14),
                     ),
                   ],
@@ -4287,10 +4309,21 @@ class _BLEHomePageState extends State<BLEHomePage> {
               _recentHeartRates.removeAt(0);
             }
             
-            // デバッグ出力（必要に応じてコメントアウト）
-            // print('心拍数を記録: $heartRate BPM');
-            // print('履歴: ${_recentHeartRates.join(', ')} BPM');
-            // print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+            // UIを更新
+            if (mounted) {
+              setState(() {
+                currentHeartRate = heartRate;
+                _lastHeartRateUpdate = DateTime.now();
+              });
+            }
+            
+            // デバッグ出力
+            print('=== 心拍データ更新 (Huawei) ===');
+            print('心拍数: $heartRate BPM');
+            print('履歴: ${_recentHeartRates.join(', ')} BPM');
+            print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+            print('更新時刻: ${DateTime.now().toIso8601String()}');
+            print('=============================');
           } else {
             print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');  // この警告は残す
           }
@@ -4339,9 +4372,21 @@ class _BLEHomePageState extends State<BLEHomePage> {
           }
           _lastHeartRateReceived = now;
           
-          // デバッグ出力（必要に忌てコメントアウト）
-          // print('心拍数を記録: $heartRate BPM');
-          // print('履歴: ${_recentHeartRates.join(', ')} BPM');
+          // UIを更新
+          if (mounted) {
+            setState(() {
+              currentHeartRate = heartRate;
+              _lastHeartRateUpdate = DateTime.now();
+            });
+          }
+          
+          // デバッグ出力
+          print('=== 心拍データ更新 (標準BLE) ===');
+          print('心拍数: $heartRate BPM');
+          print('履歴: ${_recentHeartRates.join(', ')} BPM');
+          print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+          print('更新時刻: ${DateTime.now().toIso8601String()}');
+          print('================================');
         }
       } else {
         print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');
@@ -4367,11 +4412,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
       }
 
       // 歩行解析サービスにデータを渡す
-      gaitAnalysisService.addSensorData(sensorData);
+      gaitAnalysisService?.addSensorData(sensorData);
 
       // UI表示用の値を更新
-      _displaySpm = gaitAnalysisService.currentSpm;
-      _displayStepCount = gaitAnalysisService.stepCount;
+      _displaySpm = gaitAnalysisService?.currentSpm ?? 0.0;
+      _displayStepCount = gaitAnalysisService?.stepCount ?? 0;
 
       // グラフ用データの更新 (SPM)
       if (_displaySpm > 0) {
@@ -5112,3 +5157,4 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
   }
 }
+
