@@ -154,6 +154,42 @@ class ExperimentController {
     _isStable = false;
   }
 
+  /// 実験をリセット（データ保存なし）
+  Future<void> resetExperiment() async {
+    // タイマーをキャンセル
+    _phaseTimer?.cancel();
+    _phaseTimer = null;
+
+    _dataRecordingTimer?.cancel();
+    _dataRecordingTimer = null;
+
+    _adaptationStabilityTimer?.cancel();
+    _adaptationStabilityTimer = null;
+
+    // メトロノームを停止
+    if (isPlaying) {
+      if (_useNativeMetronome) {
+        await _nativeMetronome.stop();
+      } else {
+        await _metronome.stop();
+      }
+    }
+
+    // データ保存せずにリセット
+    _currentSession = null;
+    _recentSpmValues.clear();
+    _stableSeconds = 0;
+    _isStable = false;
+    _currentSpm = 0.0;
+    _inductionTempoSteps.clear();
+    _currentInductionStepIndex = 0;
+    
+    // 歩行解析サービスもリセット
+    _gaitAnalysisService.reset();
+
+    _sendMessage('実験をリセットしました');
+  }
+
   /// 現在のフェーズを開始
   void _startCurrentPhase() {
     if (_currentSession == null) return;

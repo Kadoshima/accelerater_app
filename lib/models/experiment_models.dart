@@ -237,6 +237,11 @@ class ExperimentSession {
     if (currentPhaseStartTime == null) return 0;
     return DateTime.now().difference(currentPhaseStartTime!).inSeconds;
   }
+  
+  /// 実験全体の経過時間を秒で取得
+  int getTotalElapsedSeconds() {
+    return DateTime.now().difference(startTime).inSeconds;
+  }
 
   /// 現在のフェーズの進捗率を取得 (0.0 - 1.0)
   double getPhaseProgress() {

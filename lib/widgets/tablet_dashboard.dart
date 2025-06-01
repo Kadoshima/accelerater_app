@@ -37,8 +37,6 @@ class TabletDashboard extends StatefulWidget {
 }
 
 class _TabletDashboardState extends State<TabletDashboard> {
-  List<FlSpot> heartRateSpots = [];
-  
   @override
   void initState() {
     super.initState();

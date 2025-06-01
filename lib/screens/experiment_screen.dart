@@ -157,7 +157,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       ExperimentSession session, Map<String, dynamic> data) {
     setState(() {
       // グラフデータの更新
-      final time = session.getElapsedSeconds() / 60.0; // X軸は分単位
+      final time = session.getTotalElapsedSeconds() / 60.0; // X軸は分単位（実験全体の経過時間）
       final currentSpm = data['currentSPM'] as double;
       final targetSpm = data['targetSPM'] as double;
 
@@ -242,6 +242,7 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       _isRunning = true;
       _spmSpots.clear();
       _targetSpots.clear();
+      _heartRateSpots.clear();  // 心拍数データもクリア
     });
   }
 
@@ -251,7 +252,53 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
 
     setState(() {
       _isRunning = false;
+      // グラフデータをクリア
+      _spmSpots.clear();
+      _targetSpots.clear();
+      _heartRateSpots.clear();
     });
+  }
+
+  // 実験をリセット
+  void _resetExperiment() async {
+    // 確認ダイアログを表示
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('実験をリセット'),
+        content: const Text('現在の実験データは保存されません。本当にリセットしますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('リセット'),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _experimentController.resetExperiment();
+
+      setState(() {
+        _isRunning = false;
+        _isConfiguring = true;
+        // グラフデータをクリア
+        _spmSpots.clear();
+        _targetSpots.clear();
+        _heartRateSpots.clear();
+        // 軸の範囲をリセット
+        _minY = 40.0;
+        _maxY = 160.0;
+        _maxX = 1.0;
+        _minHeartRate = 40.0;
+        _maxHeartRate = 180.0;
+      });
+    }
   }
 
   // アンケート表示
@@ -369,6 +416,14 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
           backgroundColor: Colors.blue,
           elevation: 0,
           actions: [
+            // リセットボタン
+            if (_isRunning)
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: _resetExperiment,
+                tooltip: 'リセット',
+                color: Colors.white,
+              ),
             // Bluetooth接続ボタン
             IconButton(
               icon: Icon(
@@ -450,6 +505,12 @@ class _ExperimentScreenState extends State<ExperimentScreen> {
       appBar: AppBar(
         title: const Text('歩行リズム誘導実験'),
         actions: [
+          if (_isRunning)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _resetExperiment,
+              tooltip: 'リセット',
+            ),
           IconButton(
             icon: const Icon(Icons.help_outline),
             onPressed: () {
