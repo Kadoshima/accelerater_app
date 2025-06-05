@@ -11,7 +11,8 @@ class AppException implements Exception {
   });
 
   @override
-  String toString() => '${runtimeType}: $message ${code != null ? '(Code: $code)' : ''}';
+  String toString() =>
+      '$runtimeType: $message ${code != null ? '(Code: $code)' : ''}';
 }
 
 /// Bluetooth関連の例外

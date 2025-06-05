@@ -18,7 +18,8 @@
 - 1秒ごとにUIを更新し、最新の心拍数を表示
 
 #### 実装詳細
-- **ファイル**: `lib/main.dart` (BLEHomePage)
+- **リポジトリ**: `data/repositories/bluetooth_repository_impl.dart`
+- **ユースケース**: `domain/usecases/bluetooth/get_heart_rate_usecase.dart`
 - **標準BLEサービスUUID**: `0000180d-0000-1000-8000-00805f9b34fb`
 - **心拍数測定特性UUID**: `00002a37-0000-1000-8000-00805f9b34fb`
 - **データバッファリング**: 最新3-5個の値を保持してスムージング
@@ -144,49 +145,167 @@ M5SensorData {
 - メタデータ（信頼性、歩数、安定性など）
 - 実験条件とセッション情報
 
-## 新アーキテクチャ
+## クリーンアーキテクチャ実装
 
 ### レイヤードアーキテクチャ
 
 ```
 Presentation層 (UI/状態管理)
 │
-├── Screens (画面)
-├── Widgets (再利用可能なUIコンポーネント)
-└── Providers (Riverpod状態管理)
+├── screens/              # 画面コンポーネント
+│   ├── experiment_screen.dart  # 実験実行画面
+│   └── design_system_demo.dart # デザインシステムデモ
+├── widgets/              # 再利用可能なUIコンポーネント
+│   ├── device_connection_screen.dart
+│   ├── cv_trend_chart.dart
+│   └── common/
+│       ├── app_button.dart
+│       ├── app_card.dart
+│       └── app_text_field.dart
+└── providers/            # Riverpod状態管理
+    ├── bluetooth_providers.dart
+    ├── experiment_providers.dart
+    ├── gait_analysis_providers.dart
+    ├── metronome_providers.dart
+    ├── service_providers.dart      # DIプロバイダー
+    └── usecase_providers.dart      # ユースケースDI
 
 Domain層 (ビジネスロジック)
 │
-├── Entities (ドメインモデル)
-├── Repositories (インターフェース)
-└── UseCases (ユースケース)
+├── entities/             # ドメインモデル
+│   ├── bluetooth_device.dart (freezed)
+│   └── heart_rate_data.dart (freezed)
+├── repositories/         # リポジトリインターフェース
+│   ├── bluetooth_repository.dart
+│   ├── experiment_repository.dart
+│   ├── gait_analysis_repository.dart
+│   └── metronome_repository.dart
+└── usecases/             # ユースケース
+    ├── bluetooth/
+    │   ├── connect_device_usecase.dart
+    │   ├── get_heart_rate_usecase.dart
+    │   ├── get_imu_data_usecase.dart
+    │   └── scan_devices_usecase.dart
+    ├── control_metronome_usecase.dart
+    └── start_experiment_usecase.dart
 
 Data層 (データアクセス)
 │
-├── Repositories (実装)
-├── DataSources (データソース)
-└── Models (DTO)
+├── repositories/         # リポジトリ実装
+│   ├── bluetooth_repository_impl.dart
+│   ├── experiment_repository_impl.dart
+│   ├── flutter_metronome_repository_impl.dart
+│   ├── native_metronome_repository_impl.dart
+│   └── gait_analysis_repository_impl.dart
+├── datasources/          # データソース
+│   ├── local/           # ローカルデータ
+│   └── remote/          # リモートAPI
+└── models/               # データ転送オブジェクト
+    ├── sensor_data.dart
+    └── experiment_models.dart
 
 Core層 (共通機能)
 │
-├── Constants (定数)
-├── Errors (例外)
-└── Utils (ユーティリティ)
+├── constants/            # 定数定義
+│   ├── app_constants.dart
+│   └── ble_constants.dart
+├── errors/               # 例外クラス
+│   └── app_exceptions.dart
+├── theme/                # UIテーマ
+│   ├── app_colors.dart
+│   ├── app_spacing.dart
+│   ├── app_theme.dart
+│   └── app_typography.dart
+└── utils/                # ユーティリティ
+    ├── logger_service.dart
+    └── result.dart
+
+Services層 (ビジネスサービス)
+│
+├── adaptive_tempo_controller.dart  # 適応的テンポ制御
+├── experiment_controller.dart      # 実験管理
+├── gait_analysis_service.dart      # 歩行解析
+├── metronome.dart                  # Flutterメトロノーム
+└── native_metronome.dart           # ネイティブメトロノーム
 ```
+
+### 各層の責任
+
+#### Presentation層
+- **ユーザーインターフェース**: UIコンポーネントと画面
+- **状態管理**: Riverpodプロバイダーによるリアクティブな状態管理
+- **依存性注入**: サービスやユースケースのDI
+
+#### Domain層
+- **ビジネスロジック**: アプリケーションの中核ロジック
+- **エンティティ**: 不変のドメインモデル
+- **インターフェース定義**: データ層への依存の逆転
+
+#### Data層
+- **データアクセス**: BLE、ファイル、APIへのアクセス
+- **リポジトリ実装**: Domain層のインターフェースの具体的実装
+- **データ変換**: 外部データとドメインモデルの変換
+
+#### Core層
+- **共通機能**: 各層から利用されるユーティリティ
+- **エラー処理**: 統一的な例外処理
+- **テーマ**: アプリ全体のデザインシステム
 
 ### エラーハンドリング
 
 Either型を使用した安全なエラー処理：
 
 ```dart
+// core/utils/result.dart
 typedef Result<T> = Either<AppException, T>;
 
-// 使用例
-final result = await repository.connectDevice(deviceId);
+// ユースケースでの使用例
+class ConnectDeviceUseCase {
+  final BluetoothRepository _repository;
+  
+  Future<Result<Unit>> call(String deviceId) async {
+    try {
+      // ビジネスロジックの検証
+      if (deviceId.isEmpty) {
+        return Left(ValidationException('Device ID cannot be empty'));
+      }
+      return await _repository.connectDevice(deviceId);
+    } catch (e) {
+      return Left(UnknownException(e.toString()));
+    }
+  }
+}
+
+// UI層でのハンドリング
+final result = await connectDeviceUseCase(deviceId);
 result.fold(
-  (error) => showError(error.message),
-  (success) => showSuccess(),
+  (error) => showSnackBar(error.message),
+  (success) => navigateToDeviceScreen(),
 );
+```
+
+### 依存性注入
+
+Riverpodを使用した依存性注入の流れ：
+
+```dart
+// 1. サービスの提供 (service_providers.dart)
+final bluetoothRepositoryProvider = Provider<BluetoothRepository>((ref) {
+  return BluetoothRepositoryImpl();
+});
+
+// 2. ユースケースの提供 (usecase_providers.dart)
+final connectDeviceUseCaseProvider = Provider<ConnectDeviceUseCase>((ref) {
+  final repository = ref.watch(bluetoothRepositoryProvider);
+  return ConnectDeviceUseCase(repository);
+});
+
+// 3. UI状態の管理 (bluetooth_providers.dart)
+final deviceConnectionProvider = 
+    StateNotifierProvider<DeviceConnectionNotifier, ConnectionState>((ref) {
+  final connectDevice = ref.watch(connectDeviceUseCaseProvider);
+  return DeviceConnectionNotifier(connectDevice);
+});
 ```
 
 ## システム統合

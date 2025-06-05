@@ -1,14 +1,44 @@
 # 技術詳細ドキュメント
 
+## 更新日: 2025/06/04
+
+## アーキテクチャ概要
+
+本システムはClean Architectureに基づいた以下のレイヤー構造を採用しています：
+
+```
+Presentation層 (UI/状態管理)
+├── screens/              # 画面コンポーネント
+├── widgets/              # 再利用可能なUIパーツ
+└── providers/            # Riverpod状態管理
+
+Domain層 (ビジネスロジック)
+├── entities/             # ドメインモデル
+├── repositories/         # リポジトリインターフェース
+└── usecases/             # ユースケース
+
+Data層 (データアクセス)
+├── repositories/         # リポジトリ実装
+├── datasources/          # データソース
+└── models/               # データ転送オブジェクト
+
+Core層 (共通機能)
+├── constants/            # 定数定義
+├── errors/               # 例外クラス
+└── utils/                # ユーティリティ
+```
+
 ## 1. BLE通信プロトコル
 
 ### 心拍数データ受信
 
 #### 標準BLE心拍数サービス
 ```dart
-// main.dart: _setupHeartRateMonitoring() (行 3953-4057)
-const String HEART_RATE_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb";
-const String HEART_RATE_MEASUREMENT_CHAR_UUID = "00002a37-0000-1000-8000-00805f9b34fb";
+// core/constants/ble_constants.dart
+class BleConstants {
+  static const heartRateServiceUuid = "0000180d-0000-1000-8000-00805f9b34fb";
+  static const heartRateMeasurementUuid = "00002a37-0000-1000-8000-00805f9b34fb";
+}
 
 // データフォーマット（標準BLE）
 // バイト0: フラグ（ビット0 = 心拍数フォーマット）
@@ -19,7 +49,7 @@ const String HEART_RATE_MEASUREMENT_CHAR_UUID = "00002a37-0000-1000-8000-00805f9
 
 #### Huaweiカスタムプロトコル
 ```dart
-// main.dart: _processHeartRateData() (行 4058-4118)
+// data/repositories/bluetooth_repository_impl.dart内で処理
 // プロトコル判定
 if (data.length >= 2 && data[0] == 0x5a && data[1] == 0x00) {
   // Huaweiプロトコル
@@ -39,11 +69,13 @@ if (data.length >= 2 && data[0] == 0x5a && data[1] == 0x00) {
 
 #### M5Stick IMUプロトコル
 ```dart
-// main.dart: _startListeningToSensor() (行 4119-4156)
-const String IMU_SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-const String IMU_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+// core/constants/ble_constants.dart
+class BleConstants {
+  static const imuServiceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  static const imuCharacteristicUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+}
 
-// JSONフォーマット例
+// models/sensor_data.dart - M5SensorDataモデル
 {
   "device": "M5StickIMU",
   "timestamp": 1234567890,
@@ -66,7 +98,7 @@ const String IMU_CHAR_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
 #### アルゴリズムパラメータ
 ```dart
-// gait_analysis_service.dart
+// utils/gait_analysis_service.dart
 class GaitAnalysisService {
   // 基本パラメータ
   final double samplingRate = 60.0;        // Hz
@@ -84,7 +116,7 @@ class GaitAnalysisService {
 
 #### FFT処理フロー
 ```dart
-// gait_analysis_service.dart: _processFFT() (行 130-242)
+// utils/gait_analysis_service.dart: _processFFT()メソッド
 1. データ前処理
    - 平均値除去（トレンド除去）
    - ハミング窓適用
@@ -117,11 +149,23 @@ if (stdDev < minStdDev) {
 
 ## 3. メトロノーム実装
 
-### Flutterメトロノーム
+### リポジトリパターン
+```dart
+// domain/repositories/metronome_repository.dart
+abstract class MetronomeRepository {
+  Future<Result<Unit>> start({required double bpm});
+  Future<Result<Unit>> stop();
+  Future<Result<Unit>> changeTempo(double bpm);
+  Stream<double> get tempoStream;
+  bool get isPlaying;
+}
+```
+
+### Flutterメトロノーム実装
 
 #### 波形生成
 ```dart
-// metronome.dart: _generateClick() (行 236-254)
+// data/repositories/flutter_metronome_repository_impl.dart
 // クリック音パラメータ
 const frequency = 900.0;        // Hz
 const duration = 0.025;         // 秒
@@ -139,7 +183,6 @@ for (int i = 0; i < totalSamples; i++) {
 
 #### タイミング制御
 ```dart
-// metronome.dart: _scheduleBeat() (行 177-208)
 // 高精度タイマー使用（1ms精度）
 Timer(Duration(milliseconds: delayMillis), () {
   _playClick();
@@ -152,11 +195,11 @@ _nextBeatTime = _startTime! +
   (beatInterval * (_currentBeat + 1));
 ```
 
-### ネイティブメトロノーム（iOS）
+### ネイティブメトロノーム実装
 
-#### オーディオエンジン設定
+#### iOS実装 (NativeMetronomePlugin.swift)
 ```swift
-// NativeMetronomePlugin.swift (行 84-127)
+// ios/Runner/NativeMetronomePlugin.swift
 // 超低遅延設定
 let session = AVAudioSession.sharedInstance()
 try session.setCategory(.playback, 
@@ -171,22 +214,20 @@ let sourceNode = AVAudioSourceNode { _, _, frameCount, audioBufferList -> OSStat
 }
 ```
 
-#### 波形レンダリング
-```swift
-// NativeMetronomePlugin.swift: generateClickWaveform() (行 225-250)
-// プリレンダリングによる低遅延
-for i in 0..<clickSamples.count {
-  let t = Double(i) / sampleRate
-  let amplitude = 0.5
-  let frequency = 900.0
-  
-  // エクスポネンシャル減衰
-  let decayRate = 40.0
-  let envelope = exp(-decayRate * t)
-  
-  clickSamples[i] = Float(amplitude * envelope * 
-    sin(2.0 * .pi * frequency * t))
-}
+#### Android実装 (NativeMetronomePlugin.kt)
+```kotlin
+// android/app/src/main/kotlin/com/example/accelerater_app/NativeMetronomePlugin.kt
+// AudioTrack静的モード
+val audioTrack = AudioTrack.Builder()
+    .setAudioAttributes(audioAttributes)
+    .setAudioFormat(audioFormat)
+    .setBufferSizeInBytes(bufferSize)
+    .setTransferMode(AudioTrack.MODE_STATIC)
+    .build()
+    
+// 高精度タイマー
+val handler = Handler(handlerThread.looper)
+handler.postDelayed(beatRunnable, delayMillis)
 ```
 
 ## 4. データ同期と記録
@@ -197,7 +238,7 @@ for i in 0..<clickSamples.count {
 DateTime now = DateTime.now();
 int timestamp = now.millisecondsSinceEpoch;
 
-// センサーデータ同期
+// models/sensor_data.dart - M5SensorData
 M5SensorData {
   timestamp: timestamp,  // デバイス側タイムスタンプ
   // アプリ側で受信時刻も記録
@@ -206,7 +247,7 @@ M5SensorData {
 
 ### 実験データ記録
 ```dart
-// experiment_controller.dart: recordTimeSeriesData() (行 134-156)
+// services/experiment_controller.dart: recordTimeSeriesData()メソッド
 Map<String, dynamic> dataPoint = {
   'timestamp': DateTime.now().toIso8601String(),
   'elapsed_seconds': elapsedSeconds,
@@ -216,19 +257,57 @@ Map<String, dynamic> dataPoint = {
   'heart_rate': heartRate,
   'step_count': stepCount,
   'reliability': reliability,
+  'cv': currentCV,              // 変動係数
+  'response_time': responseTime, // 反応時間
   'additional_data': {
     'spm_history': spmHistory,
     'stable_seconds': stableSeconds,
     'is_stable': isStable,
+    'use_adaptive_control': useAdaptiveControl,
     // その他メタデータ
   }
 };
 ```
 
+### 加速度データ完全記録
+```dart
+// models/sensor_data.dart - AccelerometerDataBuffer
+class AccelerometerDataBuffer {
+  final int maxBufferSize = 360000; // 1時間分（100Hz × 3600秒）
+  
+  // リングバッファによる効率的なメモリ管理
+  void add(M5SensorData data) {
+    if (_buffer.length >= maxBufferSize) {
+      _buffer.removeAt(0);
+    }
+    _buffer.add(data);
+  }
+  
+  // CSV出力機能
+  String toCsv() {
+    // ヘッダーとデータをCSV形式で出力
+  }
+}
+```
+
 ## 5. エラーハンドリングとフォールバック
+
+### Result型によるエラーハンドリング
+```dart
+// core/utils/result.dart
+typedef Result<T> = Either<AppException, T>;
+
+// 使用例（domain/usecases/bluetooth/connect_device_usecase.dart）
+final result = await repository.connectDevice(deviceId);
+result.fold(
+  (error) => _handleError(error),
+  (success) => _handleSuccess(),
+);
+```
 
 ### BLE接続管理
 ```dart
+// data/repositories/bluetooth_repository_impl.dart
 // 自動再接続とタイムアウト処理
 device.connectionState.listen((state) {
   if (state == BluetoothConnectionState.disconnected) {
@@ -243,20 +322,21 @@ await device.connect(timeout: Duration(seconds: 10));
 
 ### メトロノームフォールバック
 ```dart
-// main.dart: _togglePlayback() (行 1405-1438)
+// presentation/providers/metronome_providers.dart
 try {
   // ネイティブメトロノーム試行
-  await _nativeMetronome.start();
+  await nativeMetronomeRepository.start(bpm: targetBpm);
 } catch (e) {
   // Flutterメトロノームへフォールバック
-  await _metronome.start();
+  await flutterMetronomeRepository.start(bpm: targetBpm);
 }
 ```
 
 ## 6. パフォーマンス最適化
 
 ### メモリ管理
-- センサーデータバッファ: 最大600サンプル（10秒分）
+- センサーデータバッファ: 最大600サンプル（10秒分）通常解析用
+- 加速度データ完全記録: 最大360,000サンプル（1時間分）研究用
 - 心拍数履歴: 最新3-5値のみ保持
 - FFT計算: 1秒ごとのスライディングウィンドウ
 
@@ -264,8 +344,38 @@ try {
 - BLEデータ受信: 独立ストリーム
 - UI更新: 別タイマー（1秒間隔）
 - オーディオ生成: ネイティブスレッド
+- データ保存: 非同期処理
 
 ### バッテリー最適化
 - バックグラウンドサービス対応
 - 画面オフ時の継続動作
 - 効率的なBLEスキャン設定
+
+## 7. 状態管理アーキテクチャ
+
+### Riverpodプロバイダー構造
+```dart
+// presentation/providers/service_providers.dart
+final bluetoothRepositoryProvider = Provider<BluetoothRepository>((ref) {
+  return BluetoothRepositoryImpl();
+});
+
+// presentation/providers/usecase_providers.dart
+final connectDeviceUseCaseProvider = Provider<ConnectDeviceUseCase>((ref) {
+  final repository = ref.watch(bluetoothRepositoryProvider);
+  return ConnectDeviceUseCase(repository);
+});
+
+// presentation/providers/bluetooth_providers.dart
+final bluetoothScanProvider = StreamProvider<List<BluetoothDevice>>((ref) {
+  final repository = ref.watch(bluetoothRepositoryProvider);
+  return repository.scanDevices();
+});
+```
+
+### 依存性注入フロー
+1. リポジトリの提供（serviceProviders）
+2. ユースケースの注入（usecaseProviders）
+3. UI状態の管理（各機能のproviders）
+
+この構造により、テスタビリティと保守性が向上しています。

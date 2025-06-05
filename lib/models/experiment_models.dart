@@ -212,11 +212,11 @@ class ExperimentSession {
   double followRate = 0.0;
   int adaptationSeconds = 0;
   List<Map<String, dynamic>> timeSeriesData = [];
-  
+
   /// 歩行安定性メトリクス
   double currentCV = 0.0; // 変動係数
   double currentSymmetry = 1.0; // 左右対称性
-  
+
   /// 反応時間追跡
   DateTime? lastTempoChangeTime;
   Duration? responseTime;
@@ -259,7 +259,7 @@ class ExperimentSession {
 
   /// 次のフェーズに進む
   void advanceToNextPhase() {
-    final phases = AdvancedExperimentPhase.values;
+    const phases = AdvancedExperimentPhase.values;
     final currentIndex = phases.indexOf(currentPhase);
 
     if (currentIndex < phases.length - 1) {
@@ -354,18 +354,18 @@ class ExperimentSession {
 
   /// ランダム実験の次のフェーズに進む
   void advanceToNextRandomPhase() {
-    if (randomPhaseSequence == null || 
+    if (randomPhaseSequence == null ||
         currentRandomPhaseIndex >= randomPhaseSequence!.length - 1) {
       return;
     }
-    
+
     currentRandomPhaseIndex++;
     currentPhaseStartTime = DateTime.now();
   }
 
   /// 現在のランダムフェーズを取得
   RandomPhaseInfo? getCurrentRandomPhase() {
-    if (randomPhaseSequence == null || 
+    if (randomPhaseSequence == null ||
         currentRandomPhaseIndex >= randomPhaseSequence!.length) {
       return null;
     }

@@ -55,18 +55,18 @@ class ExperimentController {
 
   /// 適応的テンポ制御
   final AdaptiveTempoController _adaptiveController = AdaptiveTempoController();
-  
+
   /// ランダム実験用のフェーズタイマー
   Timer? _randomPhaseTimer;
-  
+
   /// 歩行安定性解析
   final List<double> _recentStrideIntervals = [];
-  
+
   /// 加速度センサーデータバッファ（1時間分）
   final AccelerometerDataBuffer _accelerometerBuffer = AccelerometerDataBuffer(
     maxBufferSize: 360000, // 100Hz × 3600秒 = 360,000データポイント
   );
-  
+
   /// 加速度データリスナーの解除関数
   Function()? _accelerometerDataListener;
 
@@ -128,7 +128,7 @@ class ExperimentController {
 
     // 加速度データバッファをクリア
     _accelerometerBuffer.clear();
-    
+
     // 加速度データの収集を開始
     _startAccelerometerDataCollection();
 
@@ -156,7 +156,7 @@ class ExperimentController {
 
     _randomPhaseTimer?.cancel();
     _randomPhaseTimer = null;
-    
+
     // 加速度データ収集を停止
     _stopAccelerometerDataCollection();
 
@@ -638,7 +638,7 @@ class ExperimentController {
         currentCv: cv,
         timestamp: DateTime.now(),
       );
-      
+
       // メトロノームのテンポを更新
       if (isPlaying && (adaptiveTargetSpm - currentTempo).abs() > 1.0) {
         _changeMetronomeTempo(adaptiveTargetSpm);
@@ -646,11 +646,12 @@ class ExperimentController {
     }
 
     // 反応時間の追跡
-    if (session.lastTempoChangeTime != null && 
+    if (session.lastTempoChangeTime != null &&
         session.responseTime == null &&
         currentSpm > 0) {
       // テンポ変更に対する追従率をチェック
-      final followRate = session.calculateFollowRate(session.targetSpm, currentSpm);
+      final followRate =
+          session.calculateFollowRate(session.targetSpm, currentSpm);
       if (followRate > 90.0) {
         session.recordResponseTime();
       }
@@ -699,7 +700,7 @@ class ExperimentController {
       // ファイル名を生成
       final fileName =
           'experiment_${session.condition.id}_${session.subjectId}_${DateFormat('yyyyMMdd_HHmmss').format(session.startTime)}.csv';
-      final filePath = '${folderPath}/${fileName}';
+      final filePath = '$folderPath/$fileName';
 
       // CSVデータを作成
       final csvData = <List<dynamic>>[];
@@ -799,7 +800,7 @@ class ExperimentController {
         _accelerometerBuffer.add(sensorData);
       }
     };
-    
+
     // 定期的にデータを収集（10Hz - gaitAnalysisServiceの更新頻度に合わせる）
     Timer.periodic(const Duration(milliseconds: 100), (timer) {
       if (_accelerometerDataListener != null) {
@@ -838,19 +839,23 @@ class ExperimentController {
 
       // CSVデータを作成
       final csvData = <List<dynamic>>[];
-      
+
       // ヘッダー行
       csvData.add(['# Accelerometer Data']);
       csvData.add(['# Subject ID: ${session.subjectId}']);
       csvData.add(['# Condition: ${session.condition.id}']);
-      csvData.add(['# Start Time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(session.startTime)}']);
+      csvData.add([
+        '# Start Time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(session.startTime)}'
+      ]);
       csvData.add(['# Data Points: ${data.length}']);
-      csvData.add(['# Memory Usage: ${_accelerometerBuffer.estimatedMemoryUsageMB.toStringAsFixed(2)} MB']);
+      csvData.add([
+        '# Memory Usage: ${_accelerometerBuffer.estimatedMemoryUsageMB.toStringAsFixed(2)} MB'
+      ]);
       csvData.add([]);
-      
+
       // データヘッダー
       csvData.add(M5SensorData.getCsvHeaders());
-      
+
       // データ行
       for (final sensorData in data) {
         csvData.add(sensorData.toCsvRow());
@@ -883,13 +888,14 @@ class ExperimentController {
 
   /// ランダムフェーズを開始
   void _startRandomPhase() {
-    if (_currentSession == null || _currentSession!.randomPhaseSequence == null) {
+    if (_currentSession == null ||
+        _currentSession!.randomPhaseSequence == null) {
       return;
     }
 
     final session = _currentSession!;
     final currentPhase = session.getCurrentRandomPhase();
-    
+
     if (currentPhase == null) {
       // すべてのフェーズが完了
       stopExperiment();
@@ -897,7 +903,7 @@ class ExperimentController {
     }
 
     _sendMessage('${currentPhase.name}を開始しました');
-    
+
     // フェーズに応じた処理
     switch (currentPhase.type) {
       case RandomPhaseType.freeWalk:
@@ -911,20 +917,23 @@ class ExperimentController {
         }
         _sendMessage('自由に歩いてください');
         break;
-        
+
       case RandomPhaseType.pitchKeep:
         // 現在のベースラインSPMでメトロノームを開始
         if (session.baselineSpm > 0) {
           _startMetronome(session.baselineSpm);
           session.targetSpm = session.baselineSpm;
-          _sendMessage('歩行を継続してください（BPM: ${session.baselineSpm.toStringAsFixed(1)}）');
+          _sendMessage(
+              '歩行を継続してください（BPM: ${session.baselineSpm.toStringAsFixed(1)}）');
         }
         break;
-        
+
       case RandomPhaseType.pitchIncrease:
         // ベースラインの倍率でメトロノームを開始
-        if (session.baselineSpm > 0 && currentPhase.targetSpmMultiplier != null) {
-          final targetSpm = session.baselineSpm * currentPhase.targetSpmMultiplier!;
+        if (session.baselineSpm > 0 &&
+            currentPhase.targetSpmMultiplier != null) {
+          final targetSpm =
+              session.baselineSpm * currentPhase.targetSpmMultiplier!;
           _startMetronome(targetSpm);
           session.targetSpm = targetSpm;
           session.startResponseTimeTracking(); // 反応時間の計測開始

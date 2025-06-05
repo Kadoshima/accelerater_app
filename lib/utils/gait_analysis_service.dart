@@ -30,9 +30,10 @@ class GaitAnalysisService {
   final List<double> _recentFrequencies = []; // 最近検出した周波数
   final List<double> _fftMagnitudes = []; // デバッグ用FFT振幅値
   M5SensorData? _latestSensorData; // 最新のセンサーデータ
-  
+
   // ステップ検出用
-  final StreamController<int> _stepController = StreamController<int>.broadcast();
+  final StreamController<int> _stepController =
+      StreamController<int>.broadcast();
   Stream<int> get stepStream => _stepController.stream;
   DateTime? _lastStepTime;
   DateTime? get lastStepTime => _lastStepTime;
@@ -60,22 +61,22 @@ class GaitAnalysisService {
     this.verticalAxis = 'x', // 垂直方向の軸（デバイスが横置きならX軸）
   }) : _dataBuffer = Queue<M5SensorData>() {
     print('GaitAnalysisService初期化(FFT方式): '
-        'バッファ=${totalDataSeconds}秒, '
-        'ウィンドウ=${windowSizeSeconds}秒, '
-        'スライド=${slideIntervalSeconds}秒, '
+        'バッファ=$totalDataSeconds秒, '
+        'ウィンドウ=$windowSizeSeconds秒, '
+        'スライド=$slideIntervalSeconds秒, '
         'サンプリングレート=60Hz固定, '
         '周波数範囲=${minFrequency}Hz-${maxFrequency}Hz, '
         '信頼度閾値=${(minReliability * 100).toStringAsFixed(0)}%, '
         '静止閾値=${staticThreshold}G, '
-        '垂直軸=${verticalAxis}, '
-        '単一軸のみ使用=${useSingleAxisOnly}');
+        '垂直軸=$verticalAxis, '
+        '単一軸のみ使用=$useSingleAxisOnly');
   }
 
   /// 新しいセンサーデータを処理
   void addSensorData(M5SensorData sensorData) {
     // 最新のセンサーデータを保存
     _latestSensorData = sensorData;
-    
+
     // バッファにデータを追加
     _dataBuffer.add(sensorData);
 

@@ -18,7 +18,7 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
   final TextEditingController _textController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
-  
+
   @override
   void dispose() {
     _textController.dispose();
@@ -26,7 +26,7 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
     _searchController.dispose();
     super.dispose();
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -50,44 +50,44 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
       ),
     );
   }
-  
+
   Widget _buildTypographySection() {
-    return Column(
+    return const Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Typography',
           style: AppTypography.headlineLarge,
         ),
-        const SizedBox(height: AppSpacing.lg),
-        const Text(
+        SizedBox(height: AppSpacing.lg),
+        Text(
           'Display Large',
           style: AppTypography.displayLarge,
         ),
-        const SizedBox(height: AppSpacing.md),
-        const Text(
+        SizedBox(height: AppSpacing.md),
+        Text(
           'Headline Medium',
           style: AppTypography.headlineMedium,
         ),
-        const SizedBox(height: AppSpacing.md),
-        const Text(
+        SizedBox(height: AppSpacing.md),
+        Text(
           'Title Large',
           style: AppTypography.titleLarge,
         ),
-        const SizedBox(height: AppSpacing.md),
-        const Text(
+        SizedBox(height: AppSpacing.md),
+        Text(
           'Body Medium - This is regular body text that would be used for paragraphs and general content throughout the application.',
           style: AppTypography.bodyMedium,
         ),
-        const SizedBox(height: AppSpacing.md),
-        const Text(
+        SizedBox(height: AppSpacing.md),
+        Text(
           'Caption - Small text for less important information',
           style: AppTypography.caption,
         ),
       ],
     );
   }
-  
+
   Widget _buildCardSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -97,10 +97,10 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
           style: AppTypography.headlineLarge,
         ),
         const SizedBox(height: AppSpacing.lg),
-        AppCard(
+        const AppCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
+            children: [
               Text(
                 'Standard Card',
                 style: AppTypography.titleMedium,
@@ -120,12 +120,12 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
               const SnackBar(content: Text('Card tapped!')),
             );
           },
-          child: Column(
+          child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: const [
+                children: [
                   Text(
                     'Interactive Card',
                     style: AppTypography.titleMedium,
@@ -133,8 +133,8 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
                   Icon(Icons.arrow_forward, color: AppColors.textSecondary),
                 ],
               ),
-              const SizedBox(height: AppSpacing.xs),
-              const Text(
+              SizedBox(height: AppSpacing.xs),
+              Text(
                 'Tap this card to see the interaction.',
                 style: AppTypography.bodyMedium,
               ),
@@ -142,10 +142,10 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
           ),
         ),
         const SizedBox(height: AppSpacing.md),
-        AppOutlinedCard(
+        const AppOutlinedCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
+            children: [
               Text(
                 'Outlined Card',
                 style: AppTypography.titleMedium,
@@ -159,10 +159,10 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
           ),
         ),
         const SizedBox(height: AppSpacing.md),
-        AppGradientCard(
+        const AppGradientCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
+            children: [
               Text(
                 'Gradient Card',
                 style: AppTypography.titleMedium,
@@ -178,7 +178,7 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
       ],
     );
   }
-  
+
   Widget _buildButtonSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -286,7 +286,7 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
       ],
     );
   }
-  
+
   Widget _buildTextFieldSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

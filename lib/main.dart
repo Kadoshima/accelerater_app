@@ -120,7 +120,7 @@ class ExperimentRecord {
       targetBPM,
       detectedBPM ?? 'N/A',
       reliability != null
-          ? (reliability! * 100).toStringAsFixed(1) + '%'
+          ? '${(reliability! * 100).toStringAsFixed(1)}%'
           : 'N/A',
       accX?.toStringAsFixed(6) ?? 'N/A',
       accY?.toStringAsFixed(6) ?? 'N/A',
@@ -241,9 +241,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
   int stableThresholdSeconds = 60; // 安定とみなす秒数 (1分)
   double pitchDifferenceThreshold = 10.0; // ピッチ差の閾値
   double pitchIncrementStep = 5.0; // ピッチ増加ステップ
-  
+
   // 適応的テンポ制御
-  final AdaptiveTempoController _adaptiveTempoController = AdaptiveTempoController();
+  final AdaptiveTempoController _adaptiveTempoController =
+      AdaptiveTempoController();
   final List<double> _strideIntervals = []; // ストライド間隔の履歴
   double _currentCV = 0.0; // 現在の変動係数
   DateTime? _lastStepTime; // 最後のステップ時刻
@@ -265,11 +266,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 接続先デバイス
   BluetoothDevice? targetDevice;
-  
+
   // 心拍センサー関連
   BluetoothDevice? heartRateDevice;
-  final Guid heartRateServiceUuid = Guid("0000180d-0000-1000-8000-00805f9b34fb");
-  final Guid heartRateMeasurementCharUuid = Guid("00002a37-0000-1000-8000-00805f9b34fb");
+  final Guid heartRateServiceUuid =
+      Guid("0000180d-0000-1000-8000-00805f9b34fb");
+  final Guid heartRateMeasurementCharUuid =
+      Guid("00002a37-0000-1000-8000-00805f9b34fb");
   int currentHeartRate = 0;
   bool isHeartRateConnected = false;
   DateTime? _lastHeartRateUpdate;
@@ -344,7 +347,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 歩行解析サービスを即座に初期化
     gaitAnalysisService = GaitAnalysisService();
-    
+
     // メトロノームを即座に初期化
     _metronome = Metronome();
     _nativeMetronome = NativeMetronome();
@@ -356,7 +359,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showDeviceSelectionDialog();
     });
-    
+
     // 心拍数表示更新タイマー（1秒ごと）
     _heartRateDisplayTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_recentHeartRates.isNotEmpty && mounted) {
@@ -372,7 +375,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 位置情報の権限をチェックしてリクエスト
   Future<void> _checkLocationPermission() async {
     if (!mounted) return;
-    
+
     bool serviceEnabled;
     LocationPermission permission;
 
@@ -430,12 +433,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
   // 現在の位置情報を取得
   Future<void> _getCurrentLocation() async {
     if (!mounted) return;
-    
+
     try {
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-      
+
       if (mounted) {
         setState(() {
           _currentPosition = position;
@@ -483,7 +486,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
       if (targetDevice != null) {
         await _setupSerialCommunication();
       }
-      
+
       // 心拍センサーの初期化
       if (heartRateDevice != null) {
         await _setupHeartRateMonitoring();
@@ -722,7 +725,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   DropdownButton<int>(
                     value: tempDuration,
                     isExpanded: true,
-                    items: [
+                    items: const [
                       DropdownMenuItem<int>(value: 5 * 60, child: Text('5分')),
                       DropdownMenuItem<int>(value: 10 * 60, child: Text('10分')),
                       DropdownMenuItem<int>(value: 15 * 60, child: Text('15分')),
@@ -734,7 +737,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       });
                     },
                   ),
-                  Text('実験時間: ${tempDuration ~/ 60}分 (${tempDuration}秒)'),
+                  Text('実験時間: ${tempDuration ~/ 60}分 ($tempDuration秒)'),
                 ],
               ),
             ),
@@ -837,7 +840,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     });
 
     print(
-        '加速度データの記録を開始しました: $experimentFileName (被験者: $subjectId, ${experimentDurationSeconds}秒間)');
+        '加速度データの記録を開始しました: $experimentFileName (被験者: $subjectId, $experimentDurationSeconds秒間)');
   }
 
   // 実験データを記録 (SPMを記録するように変更)
@@ -951,11 +954,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
       print('Azureアップロードエラー: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Azureへのアップロードに失敗しました: $e'),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+          SnackBar(
+            content: Text('Azureへのアップロードに失敗しました: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
     }
 
@@ -1148,7 +1151,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
       'Nov',
       'Dec'
     ][now.month - 1];
-    return '$weekday, ${now.day.toString().padLeft(2, '0')} $month ${now.year} ' +
+    return '$weekday, ${now.day.toString().padLeft(2, '0')} $month ${now.year} '
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')} GMT';
   }
 
@@ -1198,7 +1201,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     if (experimentTimer != null) {
       experimentTimer!.cancel();
     }
-    
+
     // 心拍数表示タイマーの解放
     _heartRateDisplayTimer?.cancel();
 
@@ -1289,8 +1292,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
           // Bluetooth接続ステータス - 常に表示
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: (isConnected && isHeartRateConnected) 
-                ? AppColors.success.withOpacity(0.1) 
+            color: (isConnected && isHeartRateConnected)
+                ? AppColors.success.withOpacity(0.1)
                 : (isConnected || isHeartRateConnected)
                     ? AppColors.warning.withOpacity(0.1)
                     : AppColors.error.withOpacity(0.1),
@@ -1301,18 +1304,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   isConnected
                       ? Icons.bluetooth_connected
                       : Icons.bluetooth_disabled,
-                  color: isConnected
-                      ? AppColors.success
-                      : AppColors.error,
+                  color: isConnected ? AppColors.success : AppColors.error,
                   size: 20,
                 ),
                 const SizedBox(width: 4),
                 Text(
                   isConnected ? 'IMU' : 'IMU未接続',
                   style: TextStyle(
-                    color: isConnected
-                        ? AppColors.success
-                        : AppColors.error,
+                    color: isConnected ? AppColors.success : AppColors.error,
                     fontWeight: FontWeight.bold,
                     fontSize: 12,
                   ),
@@ -1320,9 +1319,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 const SizedBox(width: 16),
                 // 心拍センサー接続状態
                 Icon(
-                  isHeartRateConnected
-                      ? Icons.favorite
-                      : Icons.favorite_border,
+                  isHeartRateConnected ? Icons.favorite : Icons.favorite_border,
                   color: isHeartRateConnected
                       ? AppColors.success
                       : AppColors.error,
@@ -1347,10 +1344,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.surface,
                     foregroundColor: AppColors.textPrimary,
-                    side: const BorderSide(color: AppColors.borderLight, width: 1),
+                    side: const BorderSide(
+                        color: AppColors.borderLight, width: 1),
                   ),
-                    child: Text(isConnected ? '再接続' : 'スキャン'),
-                  ),
+                  child: Text(isConnected ? '再接続' : 'スキャン'),
+                ),
               ],
             ),
           ),
@@ -1407,11 +1405,12 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 ),
                 const SizedBox(width: 16),
                 ElevatedButton.icon(
-                  icon: Icon(Icons.psychology_outlined),
+                  icon: const Icon(Icons.psychology_outlined),
                   label: Text(isRealExperimentMode ? '通常モードに戻る' : '本実験モードへ'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor:
-                        isRealExperimentMode ? AppColors.accent : AppColors.accentDark,
+                    backgroundColor: isRealExperimentMode
+                        ? AppColors.accent
+                        : AppColors.accentDark,
                     foregroundColor: AppColors.onPrimary,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 12),
@@ -1433,9 +1432,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
         ],
       ),
     );
-  }  // This closes the build() method
+  } // This closes the build() method
 
-  // 本実験を初期化する  
+  // 本実験を初期化する
   void _initializeRealExperiment() {
     // フェーズを初期状態にリセット
     currentPhase = ExperimentPhase.freeWalking;
@@ -1513,7 +1512,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // 適応制御の状態を取得
     final controlStatus = _adaptiveTempoController.getControlStatus();
-    
+
     // 現在のデータポイントを記録
     realExperimentTimeSeriesData.add({
       'timestamp': DateTime.now().millisecondsSinceEpoch,
@@ -1769,11 +1768,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // フェーズの残り時間
     remainingSeconds = freeWalkingDurationSeconds - elapsedSeconds;
-    
+
     // ストライド間隔を計算して履歴に追加
     if (_lastStepTime != null) {
-      final interval = DateTime.now().difference(_lastStepTime!).inMilliseconds / 1000.0;
-      if (interval > 0.3 && interval < 1.5) { // 妥当な間隔のみ
+      final interval =
+          DateTime.now().difference(_lastStepTime!).inMilliseconds / 1000.0;
+      if (interval > 0.3 && interval < 1.5) {
+        // 妥当な間隔のみ
         _strideIntervals.add(interval);
         if (_strideIntervals.length > 30) {
           _strideIntervals.removeAt(0);
@@ -1781,10 +1782,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
         // CVを計算
         if (_strideIntervals.length >= 5) {
           _currentCV = GaitStabilityAnalyzer.calculateCV(_strideIntervals);
-          
+
           // CV履歴に追加（グラフ表示用）
           _cvHistory.add(_currentCV);
-          if (_cvHistory.length > 60) { // 最大60データポイント（約2分間）
+          if (_cvHistory.length > 60) {
+            // 最大60データポイント（約2分間）
             _cvHistory.removeAt(0);
           }
         }
@@ -1800,7 +1802,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
             recentPitches.reduce((a, b) => a + b) / recentPitches.length;
         baseWalkingPitch = (baseWalkingPitch / 5).round() * 5.0; // 5の倍数に丸める
         targetPitch = baseWalkingPitch;
-        
+
         // 適応的テンポ制御を初期化
         _adaptiveTempoController.initialize(baseWalkingPitch);
 
@@ -1832,7 +1834,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
   void _handlePitchAdjustmentPhase(double currentPitch) {
     // ストライド間隔を更新
     if (_lastStepTime != null) {
-      final interval = DateTime.now().difference(_lastStepTime!).inMilliseconds / 1000.0;
+      final interval =
+          DateTime.now().difference(_lastStepTime!).inMilliseconds / 1000.0;
       if (interval > 0.3 && interval < 1.5) {
         _strideIntervals.add(interval);
         if (_strideIntervals.length > 30) {
@@ -1840,24 +1843,25 @@ class _BLEHomePageState extends State<BLEHomePage> {
         }
         if (_strideIntervals.length >= 5) {
           _currentCV = GaitStabilityAnalyzer.calculateCV(_strideIntervals);
-          
+
           // CV履歴に追加（グラフ表示用）
           _cvHistory.add(_currentCV);
-          if (_cvHistory.length > 60) { // 最大60データポイント（約2分間）
+          if (_cvHistory.length > 60) {
+            // 最大60データポイント（約2分間）
             _cvHistory.removeAt(0);
           }
         }
       }
     }
     _lastStepTime = DateTime.now();
-    
+
     // 適応的テンポ制御で目標SPMを更新
     final adaptedTargetSpm = _adaptiveTempoController.updateTargetSpm(
       currentSpm: currentPitch,
       currentCv: _currentCV,
       timestamp: DateTime.now(),
     );
-    
+
     // 微細な調整のみ行う（無意識的な誘導）
     if ((adaptedTargetSpm - targetPitch).abs() > 0.5) {
       targetPitch = adaptedTargetSpm;
@@ -1884,7 +1888,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
         targetPitch = _adaptiveTempoController.getNextIncreasedTarget();
         _changeMusicTempo(targetPitch);
 
-        print('ピッチ調整フェーズ終了: 次のピッチ目標=$targetPitch BPM, CV=${_currentCV.toStringAsFixed(3)}');
+        print(
+            'ピッチ調整フェーズ終了: 次のピッチ目標=$targetPitch BPM, CV=${_currentCV.toStringAsFixed(3)}');
 
         // 通知
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1942,7 +1947,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
         phaseStableSeconds = 0;
         pitchIncreaseCount++;
 
-        print('ピッチ増加: 次のピッチ目標=$targetPitch BPM (${pitchIncreaseCount}回目)');
+        print('ピッチ増加: 次のピッチ目標=$targetPitch BPM ($pitchIncreaseCount回目)');
 
         // 通知
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2174,7 +2179,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         height: 200,
                         child: LineChart(
                           LineChartData(
-                            gridData: FlGridData(show: true),
+                            gridData: const FlGridData(show: true),
                             titlesData: FlTitlesData(
                               leftTitles: AxisTitles(
                                 sideTitles: SideTitles(
@@ -2198,9 +2203,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   },
                                 ),
                               ),
-                              topTitles: AxisTitles(
+                              topTitles: const AxisTitles(
                                   sideTitles: SideTitles(showTitles: false)),
-                              rightTitles: AxisTitles(
+                              rightTitles: const AxisTitles(
                                   sideTitles: SideTitles(showTitles: false)),
                             ),
                             borderData: FlBorderData(show: true),
@@ -2215,7 +2220,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                 isCurved: false,
                                 color: Colors.blue,
                                 barWidth: 2,
-                                dotData: FlDotData(show: false),
+                                dotData: const FlDotData(show: false),
                               ),
                               // 目標BPM（直線）
                               if (targetPitch > 0)
@@ -2226,7 +2231,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   ],
                                   color: Colors.red.withOpacity(0.7),
                                   barWidth: 2,
-                                  dotData: FlDotData(show: false),
+                                  dotData: const FlDotData(show: false),
                                   dashArray: [5, 5],
                                 ),
                             ],
@@ -2629,7 +2634,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                               message: isPlaying
                                   ? '再生中はテンポを変更できません。一時停止してから変更してください。'
                                   : '記録中はテンポを変更できません。',
-                              child: Icon(
+                              child: const Icon(
                                 Icons.info_outline,
                                 size: 16,
                                 color: Colors.orange,
@@ -2747,7 +2752,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                             height: 200,
                             child: LineChart(
                               LineChartData(
-                                gridData: FlGridData(show: true),
+                                gridData: const FlGridData(show: true),
                                 titlesData: FlTitlesData(
                                   leftTitles: AxisTitles(
                                     sideTitles: SideTitles(
@@ -2771,10 +2776,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                       },
                                     ),
                                   ),
-                                  topTitles: AxisTitles(
+                                  topTitles: const AxisTitles(
                                       sideTitles:
                                           SideTitles(showTitles: false)),
-                                  rightTitles: AxisTitles(
+                                  rightTitles: const AxisTitles(
                                       sideTitles:
                                           SideTitles(showTitles: false)),
                                 ),
@@ -2790,7 +2795,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                     isCurved: false,
                                     color: Colors.blue,
                                     barWidth: 2,
-                                    dotData: FlDotData(show: false),
+                                    dotData: const FlDotData(show: false),
                                   ),
                                   // ターゲットBPM (直線)
                                   if (targetPitch > 0)
@@ -2801,7 +2806,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                       ],
                                       color: Colors.red.withOpacity(0.5),
                                       barWidth: 2,
-                                      dotData: FlDotData(show: false),
+                                      dotData: const FlDotData(show: false),
                                       dashArray: [5, 5],
                                     ),
                                 ],
@@ -2861,9 +2866,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                     '合計レコード数: ${experimentRecords.length}',
                                     style: const TextStyle(fontSize: 14),
                                   ),
-                                  Text(
+                                  const Text(
                                     '記録間隔: 100ミリ秒',
-                                    style: const TextStyle(fontSize: 14),
+                                    style: TextStyle(fontSize: 14),
                                   ),
                                   Text(
                                     '推定ファイルサイズ: ${(experimentRecords.length * 100 / 1024).toStringAsFixed(1)} KB',
@@ -2899,8 +2904,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / " +
-                                          "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} SPM", // 単位変更
+                                      "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / "
+                                      "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} SPM", // 単位変更
                                       style: const TextStyle(fontSize: 13),
                                     ),
                                     Text(
@@ -2930,7 +2935,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     return Column(
       children: [
         // 実験設定カード (変更なし)
-        Card(
+        const Card(
             // ...
             ),
         // 残り時間表示 (変更なし)
@@ -2969,7 +2974,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                             height: 200,
                             child: LineChart(
                               LineChartData(
-                                gridData: FlGridData(show: true),
+                                gridData: const FlGridData(show: true),
                                 titlesData: FlTitlesData(
                                   leftTitles: AxisTitles(
                                     sideTitles: SideTitles(
@@ -2979,7 +2984,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                           Text(value.toInt().toString()),
                                     ),
                                   ),
-                                  bottomTitles: AxisTitles(
+                                  bottomTitles: const AxisTitles(
                                     sideTitles: SideTitles(
                                       showTitles: true,
                                       reservedSize: 30,
@@ -2987,10 +2992,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                       // getTitlesWidget: ...
                                     ),
                                   ),
-                                  topTitles: AxisTitles(
+                                  topTitles: const AxisTitles(
                                       sideTitles:
                                           SideTitles(showTitles: false)),
-                                  rightTitles: AxisTitles(
+                                  rightTitles: const AxisTitles(
                                       sideTitles:
                                           SideTitles(showTitles: false)),
                                 ),
@@ -3006,7 +3011,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                     isCurved: false,
                                     color: Colors.blue,
                                     barWidth: 2,
-                                    dotData: FlDotData(show: false),
+                                    dotData: const FlDotData(show: false),
                                   ),
                                   // ターゲットBPM (直線)
                                   LineChartBarData(
@@ -3017,7 +3022,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                     ],
                                     color: Colors.red.withOpacity(0.5),
                                     barWidth: 2,
-                                    dotData: FlDotData(show: false),
+                                    dotData: const FlDotData(show: false),
                                     dashArray: [5, 5],
                                   ),
                                 ],
@@ -3062,8 +3067,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / " +
-                                          "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} SPM", // 単位変更
+                                      "目標: ${record.targetBPM.toStringAsFixed(1)} BPM / "
+                                      "検出: ${record.detectedBPM?.toStringAsFixed(1) ?? 'N/A'} SPM", // 単位変更
                                       style: const TextStyle(fontSize: 13),
                                     ),
                                     // 加速度データ表示は変更なし
@@ -3115,9 +3120,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         padding: const EdgeInsets.all(AppSpacing.xs),
                         decoration: BoxDecoration(
                           color: AppColors.accent.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                          borderRadius:
+                              BorderRadius.circular(AppSpacing.radiusSm),
                         ),
-                        child: Icon(
+                        child: const Icon(
                           Icons.directions_walk,
                           color: AppColors.accent,
                           size: AppSpacing.iconMd,
@@ -3140,12 +3146,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
                           ),
                           decoration: BoxDecoration(
                             color: AppColors.error,
-                            borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+                            borderRadius:
+                                BorderRadius.circular(AppSpacing.radiusFull),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
+                              const Icon(
                                 Icons.fiber_manual_record,
                                 color: AppColors.textPrimary,
                                 size: AppSpacing.iconXs,
@@ -3168,9 +3175,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Text(
-                        _displaySpm > 0
-                            ? _displaySpm.toStringAsFixed(1)
-                            : '--',
+                        _displaySpm > 0 ? _displaySpm.toStringAsFixed(1) : '--',
                         style: AppTypography.displayLarge.copyWith(
                           color: AppColors.accent,
                           fontWeight: FontWeight.bold,
@@ -3190,7 +3195,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         children: [
                           Text(
                             '歩数: $_displayStepCount',
-                            style: TextStyle(
+                            style: const TextStyle(
                               fontSize: 16,
                               color: AppColors.textTertiary,
                             ),
@@ -3200,9 +3205,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
                               'CV: ${(_currentCV * 100).toStringAsFixed(1)}%',
                               style: TextStyle(
                                 fontSize: 14,
-                                color: _currentCV < 0.05 ? AppColors.success : 
-                                       _currentCV < 0.08 ? AppColors.warning : 
-                                       AppColors.error,
+                                color: _currentCV < 0.05
+                                    ? AppColors.success
+                                    : _currentCV < 0.08
+                                        ? AppColors.warning
+                                        : AppColors.error,
                               ),
                             ),
                         ],
@@ -3224,54 +3231,52 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   // 記録ボタン追加 (新規追加)
                   const SizedBox(height: 16),
                   Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        ElevatedButton.icon(
-                          icon: Icon(
-                            isRecording
-                                ? Icons.stop
-                                : Icons.fiber_manual_record,
-                            color: Colors.white,
-                          ),
-                          label: Text(
-                            isRecording ? "記録停止" : "記録開始",
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                          onPressed:
-                              latestData == null ? null : _toggleRecording,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                isRecording ? Colors.red : Colors.blue,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
-                          ),
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        icon: Icon(
+                          isRecording ? Icons.stop : Icons.fiber_manual_record,
+                          color: Colors.white,
                         ),
-                        if (isRecording)
-                          Padding(
-                            padding: const EdgeInsets.only(left: 8.0),
-                            child: Text(
-                              '収集データ: ${experimentRecords.length} 行',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blue.shade700,
-                              ),
+                        label: Text(
+                          isRecording ? "記録停止" : "記録開始",
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        onPressed: latestData == null ? null : _toggleRecording,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              isRecording ? Colors.red : Colors.blue,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 10),
+                        ),
+                      ),
+                      if (isRecording)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 8.0),
+                          child: Text(
+                            '収集データ: ${experimentRecords.length} 行',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue.shade700,
                             ),
                           ),
-                      ],
-                    ),
-                  ],
-                ),
+                        ),
+                    ],
+                  ),
+                ],
               ),
+            ),
             const SizedBox(height: 16),
-            
+
             // --- ★心拍数カード ---
-            if (isHeartRateConnected) 
+            if (isHeartRateConnected)
               Card(
                 elevation: 4,
                 color: AppColors.cardBackground,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
-                  side: const BorderSide(color: AppColors.borderLight, width: 1),
+                  side:
+                      const BorderSide(color: AppColors.borderLight, width: 1),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -3351,7 +3356,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 ),
               ),
             if (isHeartRateConnected) const SizedBox(height: 16),
-            
+
             // --- CV（変動係数）トレンドチャート ---
             if (_cvHistory.isNotEmpty) ...[
               AppCard(
@@ -3364,9 +3369,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
                           padding: const EdgeInsets.all(AppSpacing.xs),
                           decoration: BoxDecoration(
                             color: AppColors.accent.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                            borderRadius:
+                                BorderRadius.circular(AppSpacing.radiusSm),
                           ),
-                          child: Icon(
+                          child: const Icon(
                             Icons.show_chart,
                             color: AppColors.accent,
                             size: AppSpacing.iconMd,
@@ -3411,7 +3417,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   label: Text('メトロノーム ${isPlaying ? "停止" : "再生"}'),
                   onPressed: _togglePlayback,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: isPlaying ? Colors.redAccent : const Color(0xFF424242),
+                    backgroundColor:
+                        isPlaying ? Colors.redAccent : const Color(0xFF424242),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 16, vertical: 12),
@@ -3464,7 +3471,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 color: AppColors.cardBackground,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
-                  side: const BorderSide(color: AppColors.borderLight, width: 1),
+                  side:
+                      const BorderSide(color: AppColors.borderLight, width: 1),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -3489,7 +3497,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         height: 200,
                         child: LineChart(
                           LineChartData(
-                            gridData: FlGridData(show: true),
+                            gridData: const FlGridData(show: true),
                             titlesData: FlTitlesData(
                               leftTitles: AxisTitles(
                                 sideTitles: SideTitles(
@@ -3513,9 +3521,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   },
                                 ),
                               ),
-                              topTitles: AxisTitles(
+                              topTitles: const AxisTitles(
                                   sideTitles: SideTitles(showTitles: false)),
-                              rightTitles: AxisTitles(
+                              rightTitles: const AxisTitles(
                                   sideTitles: SideTitles(showTitles: false)),
                             ),
                             borderData: FlBorderData(show: true),
@@ -3529,7 +3537,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                 isCurved: false,
                                 color: Colors.purple,
                                 barWidth: 2,
-                                dotData: FlDotData(show: false),
+                                dotData: const FlDotData(show: false),
                               ),
                             ],
                           ),
@@ -3547,7 +3555,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 color: AppColors.cardBackground,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
-                  side: const BorderSide(color: AppColors.borderLight, width: 1),
+                  side:
+                      const BorderSide(color: AppColors.borderLight, width: 1),
                 ),
                 margin: const EdgeInsets.only(top: 16, bottom: 24),
                 child: Padding(
@@ -4116,34 +4125,35 @@ class _BLEHomePageState extends State<BLEHomePage> {
       print('サービス探索/Notify設定エラー: $e');
     }
   }
-  
+
   // 心拍センサーのモニタリングをセットアップ
   Future<void> _setupHeartRateMonitoring() async {
     if (heartRateDevice == null || _isDisposing) return;
-    
+
     print('=== 心拍センサーセットアップ開始 ===');
     print('デバイス名: ${heartRateDevice!.platformName}');
     print('デバイスID: ${heartRateDevice!.remoteId}');
-    
+
     try {
-      List<BluetoothService> services = await heartRateDevice!.discoverServices();
+      List<BluetoothService> services =
+          await heartRateDevice!.discoverServices();
       print('発見されたサービス数: ${services.length}');
-      
+
       // すべてのサービスとキャラクタリスティックをログ出力
       for (int i = 0; i < services.length; i++) {
         final service = services[i];
         print('\nサービス $i: ${service.uuid}');
         print('  キャラクタリスティック数: ${service.characteristics.length}');
-        
+
         for (int j = 0; j < service.characteristics.length; j++) {
           final char = service.characteristics[j];
           print('    キャラ $j: ${char.uuid}');
           print('      プロパティ: 読み取り=${char.properties.read}, '
-                '書き込み=${char.properties.write}, '
-                '通知=${char.properties.notify}');
+              '書き込み=${char.properties.write}, '
+              '通知=${char.properties.notify}');
         }
       }
-      
+
       // 標準の心拍サービスを探す
       bool foundHeartRateService = false;
       for (BluetoothService service in services) {
@@ -4151,25 +4161,26 @@ class _BLEHomePageState extends State<BLEHomePage> {
           print('\n標準心拍サービスを発見！');
           foundHeartRateService = true;
           foundHeartRateService = true;
-          
+
           for (BluetoothCharacteristic c in service.characteristics) {
             print('  キャラクタリスティック: ${c.uuid}');
-            
+
             if (c.uuid == heartRateMeasurementCharUuid) {
               print('  心拍測定キャラクタリスティックを発見！');
-              
+
               // 通知を有効化
               await c.setNotifyValue(true);
               print('  通知を有効化しました');
-              
-              StreamSubscription characteristicSubscription = c.lastValueStream.listen((value) {
+
+              StreamSubscription characteristicSubscription =
+                  c.lastValueStream.listen((value) {
                 if (value.isEmpty || _isDisposing) return;
                 // print('心拍データ受信: ${value.length}バイト');  // デバッグ用
                 _processHeartRateData(value);
               }, onError: (error) {
                 print('心拍データ受信エラー: $error');
               });
-              
+
               _streamSubscriptions.add(characteristicSubscription);
               print('心拍センサーのNotify設定完了');
               // returnを削除して、他のサービスも設定を続ける
@@ -4178,44 +4189,49 @@ class _BLEHomePageState extends State<BLEHomePage> {
           }
         }
       }
-      
+
       if (!foundHeartRateService) {
         print('\n標準心拍サービスが見つかりません');
-        
+
         // Huaweiデバイスの場合、カスタムサービスを探す
         if (heartRateDevice!.platformName.toLowerCase().contains('huawei')) {
           print('Huaweiデバイスが接続されました（カスタムプロトコル）');
           print('カスタムサービスの検索を試みます...');
-          
+
           // 心拍に関連しそうなキャラクタリスティックを探す
           for (BluetoothService service in services) {
             for (BluetoothCharacteristic c in service.characteristics) {
               // 通知可能なキャラクタリスティックをすべて試す
               if (c.properties.notify) {
                 print('\n通知可能なキャラを発見: ${c.uuid} (サービス: ${service.uuid})');
-                
+
                 try {
                   await c.setNotifyValue(true);
-                  
+
                   StreamSubscription sub = c.lastValueStream.listen((value) {
                     if (value.isEmpty || _isDisposing) return;
                     // print('データ受信 from ${c.uuid}: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');  // デバッグ用
-                    
+
                     // Huaweiカスタムプロトコルをチェック（ヘッダー: 5a 00）
-                    if (value.length >= 10 && value[0] == 0x5a && value[1] == 0x00) {
+                    if (value.length >= 10 &&
+                        value[0] == 0x5a &&
+                        value[1] == 0x00) {
                       int command = value.length >= 5 ? value[4] : 0;
-                      if (command == 0x09) {  // 心拍データコマンド
+                      if (command == 0x09) {
+                        // 心拍データコマンド
                         // print('  -> Huawei心拍データ検出！');  // デバッグ用
                         _processHeartRateData(value);
                       }
                     }
                     // その他の心拍データの可能性があるパターンをチェック
-                    else if (value.length >= 2 && value[1] >= 30 && value[1] <= 220) {
+                    else if (value.length >= 2 &&
+                        value[1] >= 30 &&
+                        value[1] <= 220) {
                       // print('  -> 心拍データの可能性あり！');  // デバッグ用
                       _processHeartRateData(value);
                     }
                   });
-                  
+
                   _streamSubscriptions.add(sub);
                   print('  通知を有効化しました');
                 } catch (e) {
@@ -4229,40 +4245,40 @@ class _BLEHomePageState extends State<BLEHomePage> {
     } catch (e) {
       print('心拍センサーセットアップエラー: $e');
     }
-    
+
     print('=== 心拍センサーセットアップ終了 ===');
   }
-  
+
   // 心拍データを処理する
   void _processHeartRateData(List<int> value) {
     if (value.isEmpty) {
       print('心拍データ処理: 空のデータ');
       return;
     }
-    
+
     // デバッグ出力（必要に応じてコメントアウト）
     // print('\n=== 心拍データ処理 ===');
     // print('受信データ: ${value.map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')} (${value.length}バイト)');
     // print('受信データ(10進数): ${value.join(', ')}');
-    
+
     // Huaweiカスタムプロトコルのチェック
     if (value.length >= 4 && value[0] == 0x5a && value[1] == 0x00) {
       // print('Huaweiカスタムプロトコル検出');  // デバッグ用
-      
+
       // パケット長を取得（リトルエンディアン）
       int payloadLength = value[2] | (value[3] << 8);
       // print('ペイロード長: $payloadLength バイト');  // デバッグ用
-      
+
       if (value.length >= 6) {
         int command = value[4];
         int subCommand = value[5];
         // print('コマンド: 0x${command.toRadixString(16)}, サブコマンド: 0x${subCommand.toRadixString(16)}');  // デバッグ用
-        
+
         // 心拍数パケット（コマンド 0x09）
         if (command == 0x09 && value.length >= 10) {
-          int heartRate = value[9];  // 9番目のバイトが心拍数
+          int heartRate = value[9]; // 9番目のバイトが心拍数
           // print('Huaweiプロトコル心拍数: $heartRate BPM');  // デバッグ用
-          
+
           // 妥当な心拍数の範囲をチェック（30-220 BPM）
           if (heartRate >= 30 && heartRate <= 220) {
             // 最近の心拍数リストに追加（平滑化用）
@@ -4270,7 +4286,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
             if (_recentHeartRates.length > 5) {
               _recentHeartRates.removeAt(0);
             }
-            
+
             // UIを更新
             if (mounted) {
               setState(() {
@@ -4278,16 +4294,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 _lastHeartRateUpdate = DateTime.now();
               });
             }
-            
+
             // デバッグ出力
             print('=== 心拍データ更新 (Huawei) ===');
             print('心拍数: $heartRate BPM');
             print('履歴: ${_recentHeartRates.join(', ')} BPM');
-            print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+            print(
+                '平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
             print('更新時刻: ${DateTime.now().toIso8601String()}');
             print('=============================');
           } else {
-            print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します');  // この警告は残す
+            print('警告: 異常な心拍数を検出: $heartRate BPM -> データを無視します'); // この警告は残す
           }
         } else {
           // print('その他のデータパケット（コマンド: 0x${command.toRadixString(16)}）');  // デバッグ用
@@ -4296,17 +4313,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
     } else if (value.length >= 2) {
       // 標準BLE心拍測定フォーマットを試行
       // print('標準BLE心拍測定フォーマットとして処理を試行');  // デバッグ用
-      
+
       int flags = value[0];
       int heartRate = value[1];
-      
+
       // デバッグ出力（必要に応じてコメントアウト）
       // print('フラグバイト: 0x${flags.toRadixString(16).padLeft(2, '0')} (${flags.toRadixString(2).padLeft(8, '0')}b)');
       // print('  - 心拍数フォーマット: ${(flags & 0x01) == 1 ? "16ビット" : "8ビット"}');
       // print('  - センサー接触状態: ${(flags & 0x06) >> 1}');
       // print('  - エネルギー消費フィールド: ${(flags & 0x08) != 0 ? "あり" : "なし"}');
       // print('  - RR間隔: ${(flags & 0x10) != 0 ? "あり" : "なし"}');
-      
+
       // 16ビット値の場合
       if ((flags & 0x01) == 1) {
         if (value.length >= 3) {
@@ -4319,21 +4336,21 @@ class _BLEHomePageState extends State<BLEHomePage> {
       } else {
         // print('8ビット心拍数: $heartRate BPM');  // デバッグ用
       }
-      
+
       // 妥当な心拍数の範囲をチェック（30-220 BPM）
       if (heartRate >= 30 && heartRate <= 220) {
         // 重複データを避ける
         final now = DateTime.now();
-        if (_lastHeartRateReceived == null || 
+        if (_lastHeartRateReceived == null ||
             now.difference(_lastHeartRateReceived!).inMilliseconds > 500) {
-          
           // 最近の心拍数リストに追加
           _recentHeartRates.add(heartRate);
-          if (_recentHeartRates.length > 3) {  // バッファサイズを3に減らす
+          if (_recentHeartRates.length > 3) {
+            // バッファサイズを3に減らす
             _recentHeartRates.removeAt(0);
           }
           _lastHeartRateReceived = now;
-          
+
           // UIを更新
           if (mounted) {
             setState(() {
@@ -4341,12 +4358,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
               _lastHeartRateUpdate = DateTime.now();
             });
           }
-          
+
           // デバッグ出力
           print('=== 心拍データ更新 (標準BLE) ===');
           print('心拍数: $heartRate BPM');
           print('履歴: ${_recentHeartRates.join(', ')} BPM');
-          print('平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
+          print(
+              '平均: ${(_recentHeartRates.reduce((a, b) => a + b) / _recentHeartRates.length).toStringAsFixed(1)} BPM');
           print('更新時刻: ${DateTime.now().toIso8601String()}');
           print('================================');
         }
@@ -4356,7 +4374,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
     } else {
       // print('データ長が不足: ${value.length}バイト');  // デバッグ用
     }
-    
+
     // print('===================');  // デバッグ用
   }
 
@@ -4868,7 +4886,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         height: 200,
                         child: LineChart(
                           LineChartData(
-                            gridData: FlGridData(show: true),
+                            gridData: const FlGridData(show: true),
                             titlesData: FlTitlesData(
                               leftTitles: AxisTitles(
                                 sideTitles: SideTitles(
@@ -4892,9 +4910,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   },
                                 ),
                               ),
-                              topTitles: AxisTitles(
+                              topTitles: const AxisTitles(
                                   sideTitles: SideTitles(showTitles: false)),
-                              rightTitles: AxisTitles(
+                              rightTitles: const AxisTitles(
                                   sideTitles: SideTitles(showTitles: false)),
                             ),
                             borderData: FlBorderData(show: true),
@@ -4909,7 +4927,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                 isCurved: true,
                                 color: Colors.purple,
                                 barWidth: 3,
-                                dotData: FlDotData(show: false),
+                                dotData: const FlDotData(show: false),
                               ),
                             ],
                           ),
@@ -5052,13 +5070,15 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         child: Text('${tempo.name} (${tempo.bpm} BPM)'),
                       );
                     }).toList(),
-                    onChanged: isPlaying ? null : (MusicTempo? newTempo) {
-                      if (newTempo != null) {
-                        setState(() {
-                          _changeTempo(newTempo);
-                        });
-                      }
-                    },
+                    onChanged: isPlaying
+                        ? null
+                        : (MusicTempo? newTempo) {
+                            if (newTempo != null) {
+                              setState(() {
+                                _changeTempo(newTempo);
+                              });
+                            }
+                          },
                   ),
                   if (Platform.isAndroid) ...[
                     const SizedBox(height: 20),
@@ -5068,11 +5088,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
                         const SizedBox(width: 10),
                         Switch(
                           value: _useNativeMetronome,
-                          onChanged: isPlaying ? null : (bool value) {
-                            setState(() {
-                              _useNativeMetronome = value;
-                            });
-                          },
+                          onChanged: isPlaying
+                              ? null
+                              : (bool value) {
+                                  setState(() {
+                                    _useNativeMetronome = value;
+                                  });
+                                },
                         ),
                         Text(_useNativeMetronome ? 'ネイティブ' : 'Dart'),
                       ],
@@ -5105,18 +5127,24 @@ class _BLEHomePageState extends State<BLEHomePage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('加速度センサー', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('加速度センサー',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 10),
                 Text('X軸: ${latestData?.accX?.toStringAsFixed(3) ?? "--"} G'),
                 Text('Y軸: ${latestData?.accY?.toStringAsFixed(3) ?? "--"} G'),
                 Text('Z軸: ${latestData?.accZ?.toStringAsFixed(3) ?? "--"} G'),
-                Text('合成加速度: ${latestData?.magnitude?.toStringAsFixed(3) ?? "--"} G'),
+                Text(
+                    '合成加速度: ${latestData?.magnitude?.toStringAsFixed(3) ?? "--"} G'),
                 const SizedBox(height: 20),
-                const Text('ジャイロセンサー', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('ジャイロセンサー',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 10),
-                Text('X軸: ${latestData?.gyroX?.toStringAsFixed(3) ?? "--"} deg/s'),
-                Text('Y軸: ${latestData?.gyroY?.toStringAsFixed(3) ?? "--"} deg/s'),
-                Text('Z軸: ${latestData?.gyroZ?.toStringAsFixed(3) ?? "--"} deg/s'),
+                Text(
+                    'X軸: ${latestData?.gyroX?.toStringAsFixed(3) ?? "--"} deg/s'),
+                Text(
+                    'Y軸: ${latestData?.gyroY?.toStringAsFixed(3) ?? "--"} deg/s'),
+                Text(
+                    'Z軸: ${latestData?.gyroZ?.toStringAsFixed(3) ?? "--"} deg/s'),
               ],
             ),
           ),
@@ -5143,19 +5171,25 @@ class _BLEHomePageState extends State<BLEHomePage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('SPM (歩行ピッチ): ${(gaitAnalysisService?.currentSpm ?? 0.0) > 0.1 ? gaitAnalysisService!.currentSpm.toStringAsFixed(1) : "--"}'),
+                Text(
+                    'SPM (歩行ピッチ): ${(gaitAnalysisService?.currentSpm ?? 0.0) > 0.1 ? gaitAnalysisService!.currentSpm.toStringAsFixed(1) : "--"}'),
                 const SizedBox(height: 10),
-                Text('ピーク検出アルゴリズム: トレンド除去+標準偏差閾値方式'),
+                const Text('ピーク検出アルゴリズム: トレンド除去+標準偏差閾値方式'),
                 const SizedBox(height: 10),
-                Text('信頼度スコア: ${((gaitAnalysisService?.reliability ?? 0.0) * 100).toStringAsFixed(1)}%'),
+                Text(
+                    '信頼度スコア: ${((gaitAnalysisService?.reliability ?? 0.0) * 100).toStringAsFixed(1)}%'),
                 const SizedBox(height: 10),
-                const Text('直近ステップ間隔 (ms):', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('直近ステップ間隔 (ms):',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 Text(() {
-                  final intervals = gaitAnalysisService?.getLatestStepIntervals() ?? [];
+                  final intervals =
+                      gaitAnalysisService?.getLatestStepIntervals() ?? [];
                   if (intervals.isEmpty) {
                     return '--';
                   }
-                  return intervals.map((iv) => iv.toStringAsFixed(0)).join(', ');
+                  return intervals
+                      .map((iv) => iv.toStringAsFixed(0))
+                      .join(', ');
                 }()),
               ],
             ),
@@ -5261,4 +5295,3 @@ class _BLEHomePageState extends State<BLEHomePage> {
     }
   }
 }
-

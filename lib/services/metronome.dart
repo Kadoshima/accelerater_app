@@ -258,7 +258,7 @@ class Metronome {
     int sampleRate = 44100,
   }) {
     // ヘッダーサイズと波形データサイズの計算
-    final int headerSize = 44; // WAVヘッダーのサイズ（44バイト）
+    const int headerSize = 44; // WAVヘッダーのサイズ（44バイト）
     final int numSamples = (sampleRate * durationMs ~/ 1000);
     final int dataSize = numSamples * 2; // 16ビット（2バイト）サンプル
     final int fileSize = headerSize + dataSize;

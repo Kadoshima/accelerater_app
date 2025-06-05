@@ -16,8 +16,8 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
   final Map<String, StreamSubscription> _subscriptions = {};
 
   @override
-  Stream<bool> get isAvailable =>
-      FlutterBluePlus.adapterState.map((state) => state == BluetoothAdapterState.on);
+  Stream<bool> get isAvailable => FlutterBluePlus.adapterState
+      .map((state) => state == BluetoothAdapterState.on);
 
   @override
   Stream<BluetoothScanState> get scanState =>
@@ -38,7 +38,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
   }) async {
     return Results.tryAsync(() async {
       logger.info('Bluetooth scan started');
-      
+
       final adapterState = await FlutterBluePlus.adapterState.first;
       if (adapterState != BluetoothAdapterState.on) {
         throw const BluetoothException(
@@ -69,9 +69,9 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
   }
 
   @override
-  Stream<List<BluetoothDeviceEntity>> get scanResults =>
-      FlutterBluePlus.scanResults.map((results) =>
-          results.map((r) => _mapScanResultToEntity(r)).toList());
+  Stream<List<BluetoothDeviceEntity>> get scanResults => FlutterBluePlus
+      .scanResults
+      .map((results) => results.map((r) => _mapScanResultToEntity(r)).toList());
 
   @override
   Future<Result<void>> connectDevice(String deviceId) async {
@@ -85,12 +85,12 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       }
 
       logger.info('Connecting to device: ${device.platformName}');
-      
+
       await device.connect(
         timeout: BleConstants.connectionTimeout,
         autoConnect: false,
       );
-      
+
       await device.discoverServices();
       logger.info('Connected to device: ${device.platformName}');
     }, onError: (error, stackTrace) {
@@ -140,7 +140,8 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       for (final service in services) {
         if (service.uuid.toString() == BleConstants.heartRateServiceUuid) {
           for (final char in service.characteristics) {
-            if (char.uuid.toString() == BleConstants.heartRateMeasurementCharUuid) {
+            if (char.uuid.toString() ==
+                BleConstants.heartRateMeasurementCharUuid) {
               heartRateChar = char;
               break;
             }
@@ -148,10 +149,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
         }
       }
 
-      if (heartRateChar == null) {
-        // Try Huawei protocol
-        heartRateChar = _findHuaweiCharacteristic(services);
-      }
+      heartRateChar ??= _findHuaweiCharacteristic(services);
 
       if (heartRateChar == null) {
         yield Results.failure(
@@ -164,7 +162,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       }
 
       await heartRateChar.setNotifyValue(true);
-      
+
       await for (final data in heartRateChar.lastValueStream) {
         yield _parseHeartRateData(data);
       }
@@ -219,7 +217,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       }
 
       await imuChar.setNotifyValue(true);
-      
+
       await for (final data in imuChar.lastValueStream) {
         yield _parseImuData(data);
       }
@@ -256,10 +254,12 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
   // Helper methods
   BluetoothDeviceEntity _mapToEntity(BluetoothDevice device) {
     _devices[device.remoteId.str] = device;
-    
+
     return BluetoothDeviceEntity(
       id: device.remoteId.str,
-      name: device.platformName.isNotEmpty ? device.platformName : 'Unknown Device',
+      name: device.platformName.isNotEmpty
+          ? device.platformName
+          : 'Unknown Device',
       type: _determineDeviceType(device),
       isConnected: device.isConnected,
     );
@@ -267,7 +267,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
 
   BluetoothDeviceEntity _mapScanResultToEntity(ScanResult result) {
     _devices[result.device.remoteId.str] = result.device;
-    
+
     return BluetoothDeviceEntity(
       id: result.device.remoteId.str,
       name: result.device.platformName.isNotEmpty
@@ -295,11 +295,11 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
   BluetoothDeviceType _determineDeviceTypeFromScan(ScanResult result) {
     final name = result.device.platformName.toLowerCase();
     final serviceUuids = result.advertisementData.serviceUuids;
-    
+
     if (name.contains('m5stick')) {
       return BluetoothDeviceType.imuSensor;
     }
-    
+
     for (final uuid in serviceUuids) {
       if (uuid.toString() == BleConstants.heartRateServiceUuid) {
         return BluetoothDeviceType.heartRate;
@@ -307,15 +307,16 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
         return BluetoothDeviceType.imuSensor;
       }
     }
-    
+
     if (name.contains('heart') || name.contains('hr')) {
       return BluetoothDeviceType.heartRate;
     }
-    
+
     return BluetoothDeviceType.unknown;
   }
 
-  BluetoothCharacteristic? _findHuaweiCharacteristic(List<BluetoothService> services) {
+  BluetoothCharacteristic? _findHuaweiCharacteristic(
+      List<BluetoothService> services) {
     for (final service in services) {
       for (final char in service.characteristics) {
         if (char.properties.notify) {
@@ -342,7 +343,8 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       if (data.length >= 2 &&
           data[0] == BleConstants.huaweiHeaderByte1 &&
           data[1] == BleConstants.huaweiHeaderByte2) {
-        if (data.length >= 10 && data[4] == BleConstants.huaweiHeartRateCommand) {
+        if (data.length >= 10 &&
+            data[4] == BleConstants.huaweiHeartRateCommand) {
           heartRate = data[9];
           source = HeartRateDataSource.huaweiProtocol;
         } else {
@@ -355,7 +357,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
         // Standard BLE protocol
         final flags = data[0];
         final isHeartRate16Bit = (flags & 0x01) != 0;
-        
+
         if (isHeartRate16Bit && data.length >= 3) {
           heartRate = data[1] | (data[2] << 8);
         } else if (data.length >= 2) {
@@ -370,7 +372,8 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       }
 
       // Validate heart rate range
-      if (heartRate < BleConstants.minHeartRate || heartRate > BleConstants.maxHeartRate) {
+      if (heartRate < BleConstants.minHeartRate ||
+          heartRate > BleConstants.maxHeartRate) {
         throw DataParsingException(
           message: 'Heart rate out of range: $heartRate',
           code: 'HEART_RATE_OUT_OF_RANGE',
@@ -409,7 +412,7 @@ class BluetoothRepositoryImpl implements BluetoothRepository {
       final jsonString = String.fromCharCodes(data);
       final jsonData = jsonDecode(jsonString) as Map<String, dynamic>;
       final sensorData = M5SensorData.fromJson(jsonData);
-      
+
       return Results.success(sensorData);
     } catch (error) {
       return Results.failure(
