@@ -25,6 +25,14 @@ import 'services/background_service.dart'; // バックグラウンドサービ�
 import 'screens/experiment_screen.dart'; // 新しい実験画面
 import 'utils/spm_analysis.dart';
 import 'widgets/device_connection_screen.dart'; // デバイス接続画面
+import 'core/theme/app_theme.dart'; // Design system theme
+import 'core/theme/app_colors.dart';
+import 'core/theme/app_typography.dart';
+import 'services/adaptive_tempo_controller.dart';
+import 'core/theme/app_spacing.dart';
+import 'presentation/widgets/common/app_card.dart';
+import 'presentation/widgets/common/app_button.dart';
+import 'presentation/widgets/cv_trend_chart.dart';
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
 enum ExperimentPhase {
@@ -72,14 +80,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'HealthCore M5 Demo',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        scaffoldBackgroundColor: Colors.white,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.blue,
-          foregroundColor: Colors.white,
-        ),
-      ),
+      theme: AppTheme.darkTheme, // Use our new dark theme
       home: const BLEHomePage(),
     );
   }
@@ -240,6 +241,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
   int stableThresholdSeconds = 60; // 安定とみなす秒数 (1分)
   double pitchDifferenceThreshold = 10.0; // ピッチ差の閾値
   double pitchIncrementStep = 5.0; // ピッチ増加ステップ
+  
+  // 適応的テンポ制御
+  final AdaptiveTempoController _adaptiveTempoController = AdaptiveTempoController();
+  final List<double> _strideIntervals = []; // ストライド間隔の履歴
+  double _currentCV = 0.0; // 現在の変動係数
+  DateTime? _lastStepTime; // 最後のステップ時刻
+  final List<double> _cvHistory = []; // CV値の履歴（グラフ表示用）
 
   // 歩行解析サービス
   GaitAnalysisService? gaitAnalysisService;
@@ -363,6 +371,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 位置情報の権限をチェックしてリクエスト
   Future<void> _checkLocationPermission() async {
+    if (!mounted) return;
+    
     bool serviceEnabled;
     LocationPermission permission;
 
@@ -419,16 +429,26 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // 現在の位置情報を取得
   Future<void> _getCurrentLocation() async {
+    if (!mounted) return;
+    
     try {
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-      setState(() {
-        _currentPosition = position;
+      
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+        });
         print('位置情報取得: ${position.latitude}, ${position.longitude}');
-      });
+      }
     } catch (e) {
       print('位置情報取得エラー: $e');
+      if (mounted) {
+        setState(() {
+          _locationErrorMessage = '位置情報の取得に失敗しました。';
+        });
+      }
     }
   }
 
@@ -1140,8 +1160,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
         icon: Icon(isRecording ? Icons.stop : Icons.fiber_manual_record),
         label: Text(isRecording ? '記録終了' : '記録開始'),
         style: ElevatedButton.styleFrom(
-          backgroundColor: isRecording ? Colors.red : Colors.green,
-          foregroundColor: Colors.white,
+          backgroundColor: isRecording ? AppColors.error : AppColors.success,
+          foregroundColor: AppColors.onPrimary,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         ),
         onPressed: !isConnected
@@ -1191,9 +1211,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppColors.surfaceVariant,
       appBar: AppBar(
         title: const Text('Gait Analysis App'),
-        backgroundColor: Colors.blue,
+        backgroundColor: AppColors.surface,
+        elevation: 0,
         actions: [
           // 被験者IDが設定されている場合は表示
           if (subjectId.isNotEmpty)
@@ -1250,10 +1272,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
           if (_locationErrorMessage.isNotEmpty)
             Container(
               padding: const EdgeInsets.all(8),
-              color: Colors.amber.shade100,
+              color: AppColors.warning.withOpacity(0.1),
               child: Row(
                 children: [
-                  const Icon(Icons.warning, color: Colors.amber),
+                  const Icon(Icons.warning, color: AppColors.warning),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1268,10 +1290,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             color: (isConnected && isHeartRateConnected) 
-                ? Colors.green.shade100 
+                ? AppColors.success.withOpacity(0.1) 
                 : (isConnected || isHeartRateConnected)
-                    ? Colors.orange.shade100
-                    : Colors.red.shade100,
+                    ? AppColors.warning.withOpacity(0.1)
+                    : AppColors.error.withOpacity(0.1),
             child: Row(
               children: [
                 // IMU接続状態
@@ -1280,8 +1302,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       ? Icons.bluetooth_connected
                       : Icons.bluetooth_disabled,
                   color: isConnected
-                      ? Colors.green.shade800
-                      : Colors.red.shade800,
+                      ? AppColors.success
+                      : AppColors.error,
                   size: 20,
                 ),
                 const SizedBox(width: 4),
@@ -1289,8 +1311,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   isConnected ? 'IMU' : 'IMU未接続',
                   style: TextStyle(
                     color: isConnected
-                        ? Colors.green.shade800
-                        : Colors.red.shade800,
+                        ? AppColors.success
+                        : AppColors.error,
                     fontWeight: FontWeight.bold,
                     fontSize: 12,
                   ),
@@ -1302,8 +1324,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                       ? Icons.favorite
                       : Icons.favorite_border,
                   color: isHeartRateConnected
-                      ? Colors.green.shade800
-                      : Colors.red.shade800,
+                      ? AppColors.success
+                      : AppColors.error,
                   size: 20,
                 ),
                 const SizedBox(width: 4),
@@ -1311,8 +1333,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   isHeartRateConnected ? '心拍' : '心拍未接続',
                   style: TextStyle(
                     color: isHeartRateConnected
-                        ? Colors.green.shade800
-                        : Colors.red.shade800,
+                        ? AppColors.success
+                        : AppColors.error,
                     fontWeight: FontWeight.bold,
                     fontSize: 12,
                   ),
@@ -1323,10 +1345,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     _showDeviceSelectionDialog();
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: (isConnected && isHeartRateConnected)
-                        ? Colors.orange.shade200
-                        : Colors.blue.shade200,
-                    foregroundColor: Colors.black87,
+                    backgroundColor: AppColors.surface,
+                    foregroundColor: AppColors.textPrimary,
+                    side: const BorderSide(color: AppColors.borderLight, width: 1),
                   ),
                     child: Text(isConnected ? '再接続' : 'スキャン'),
                   ),
@@ -1348,10 +1369,10 @@ class _BLEHomePageState extends State<BLEHomePage> {
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: Colors.grey.shade200,
+              color: AppColors.borderLight,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.grey.withOpacity(0.5),
+                  color: AppColors.textTertiary.withOpacity(0.5),
                   spreadRadius: 1,
                   blurRadius: 3,
                   offset: const Offset(0, -1),
@@ -1368,8 +1389,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   label: Text(isExperimentMode ? 'モニターモードに戻る' : '無音データ収集モード'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor:
-                        isExperimentMode ? Colors.blue : Colors.amber,
-                    foregroundColor: Colors.white,
+                        isExperimentMode ? AppColors.accent : AppColors.warning,
+                    foregroundColor: AppColors.onPrimary,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 12),
                   ),
@@ -1390,8 +1411,8 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   label: Text(isRealExperimentMode ? '通常モードに戻る' : '本実験モードへ'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor:
-                        isRealExperimentMode ? Colors.blue : Colors.deepPurple,
-                    foregroundColor: Colors.white,
+                        isRealExperimentMode ? AppColors.accent : AppColors.accentDark,
+                    foregroundColor: AppColors.onPrimary,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 12),
                   ),
@@ -1490,12 +1511,18 @@ class _BLEHomePageState extends State<BLEHomePage> {
       _getCurrentLocation();
     }
 
+    // 適応制御の状態を取得
+    final controlStatus = _adaptiveTempoController.getControlStatus();
+    
     // 現在のデータポイントを記録
     realExperimentTimeSeriesData.add({
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'phase': phaseNameEn,
       'targetBPM': targetPitch > 0 ? targetPitch : 0.0,
       'currentSPM': _displaySpm > 0 ? _displaySpm : 0.0,
+      'cv': _currentCV,
+      'stabilityScore': controlStatus['stabilityScore'] ?? 0.0,
+      'responsivenessScore': controlStatus['responsivenessScore'] ?? 0.0,
       'phaseStableSeconds': phaseStableSeconds,
       'pitchIncreaseCount': pitchIncreaseCount,
       'isPlaying': isPlaying,
@@ -1607,6 +1634,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
         'Phase',
         'Target_BPM',
         'Walking_SPM',
+        'CV_Percent',
+        'Stability_Score',
+        'Responsiveness_Score',
         'Stability_Time_Sec',
         'Pitch_Increase_Count',
         'Audio_Playback',
@@ -1632,6 +1662,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
           dataPoint['phase'],
           dataPoint['targetBPM'].toStringAsFixed(1),
           dataPoint['currentSPM'].toStringAsFixed(1),
+          (dataPoint['cv'] * 100).toStringAsFixed(2),
+          dataPoint['stabilityScore'].toStringAsFixed(3),
+          dataPoint['responsivenessScore'].toStringAsFixed(3),
           dataPoint['phaseStableSeconds'],
           dataPoint['pitchIncreaseCount'],
           dataPoint['isPlaying'] ? 'Playing' : 'Stopped',
@@ -1736,6 +1769,28 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
     // フェーズの残り時間
     remainingSeconds = freeWalkingDurationSeconds - elapsedSeconds;
+    
+    // ストライド間隔を計算して履歴に追加
+    if (_lastStepTime != null) {
+      final interval = DateTime.now().difference(_lastStepTime!).inMilliseconds / 1000.0;
+      if (interval > 0.3 && interval < 1.5) { // 妥当な間隔のみ
+        _strideIntervals.add(interval);
+        if (_strideIntervals.length > 30) {
+          _strideIntervals.removeAt(0);
+        }
+        // CVを計算
+        if (_strideIntervals.length >= 5) {
+          _currentCV = GaitStabilityAnalyzer.calculateCV(_strideIntervals);
+          
+          // CV履歴に追加（グラフ表示用）
+          _cvHistory.add(_currentCV);
+          if (_cvHistory.length > 60) { // 最大60データポイント（約2分間）
+            _cvHistory.removeAt(0);
+          }
+        }
+      }
+    }
+    _lastStepTime = DateTime.now();
 
     // フェーズ終了判定
     if (elapsedSeconds >= freeWalkingDurationSeconds) {
@@ -1745,6 +1800,9 @@ class _BLEHomePageState extends State<BLEHomePage> {
             recentPitches.reduce((a, b) => a + b) / recentPitches.length;
         baseWalkingPitch = (baseWalkingPitch / 5).round() * 5.0; // 5の倍数に丸める
         targetPitch = baseWalkingPitch;
+        
+        // 適応的テンポ制御を初期化
+        _adaptiveTempoController.initialize(baseWalkingPitch);
 
         // 次のフェーズに移行
         currentPhase = ExperimentPhase.pitchAdjustment;
@@ -1772,6 +1830,40 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // ピッチ調整フェーズの処理
   void _handlePitchAdjustmentPhase(double currentPitch) {
+    // ストライド間隔を更新
+    if (_lastStepTime != null) {
+      final interval = DateTime.now().difference(_lastStepTime!).inMilliseconds / 1000.0;
+      if (interval > 0.3 && interval < 1.5) {
+        _strideIntervals.add(interval);
+        if (_strideIntervals.length > 30) {
+          _strideIntervals.removeAt(0);
+        }
+        if (_strideIntervals.length >= 5) {
+          _currentCV = GaitStabilityAnalyzer.calculateCV(_strideIntervals);
+          
+          // CV履歴に追加（グラフ表示用）
+          _cvHistory.add(_currentCV);
+          if (_cvHistory.length > 60) { // 最大60データポイント（約2分間）
+            _cvHistory.removeAt(0);
+          }
+        }
+      }
+    }
+    _lastStepTime = DateTime.now();
+    
+    // 適応的テンポ制御で目標SPMを更新
+    final adaptedTargetSpm = _adaptiveTempoController.updateTargetSpm(
+      currentSpm: currentPitch,
+      currentCv: _currentCV,
+      timestamp: DateTime.now(),
+    );
+    
+    // 微細な調整のみ行う（無意識的な誘導）
+    if ((adaptedTargetSpm - targetPitch).abs() > 0.5) {
+      targetPitch = adaptedTargetSpm;
+      _changeMusicTempo(targetPitch);
+    }
+
     // 現在のピッチと目標ピッチの差を計算
     final pitchDifference = (currentPitch - targetPitch).abs();
 
@@ -1782,17 +1874,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
     if (isCloseToTarget) {
       phaseStableSeconds++;
 
-      // 安定した状態が30秒続いたら次のフェーズへ
+      // 安定した状態が続いたら次のフェーズへ
       if (phaseStableSeconds >= stableThresholdSeconds) {
         currentPhase = ExperimentPhase.pitchIncreasing;
         phaseStartTime = DateTime.now();
         phaseStableSeconds = 0;
 
-        // 次のピッチ目標を設定（5 BPM増加）
-        targetPitch += pitchIncrementStep;
+        // 適応的制御で次の目標を設定
+        targetPitch = _adaptiveTempoController.getNextIncreasedTarget();
         _changeMusicTempo(targetPitch);
 
-        print('ピッチ調整フェーズ終了: 次のピッチ目標=$targetPitch BPM');
+        print('ピッチ調整フェーズ終了: 次のピッチ目標=$targetPitch BPM, CV=${_currentCV.toStringAsFixed(3)}');
 
         // 通知
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1806,34 +1898,6 @@ class _BLEHomePageState extends State<BLEHomePage> {
     } else {
       // 安定していない場合、カウンターをリセット
       phaseStableSeconds = 0;
-
-      // ピッチの差が大きい場合、テンポ調整を検討
-      if (pitchDifference >= pitchDifferenceThreshold) {
-        // 前回の変更から一定時間経過した場合のみ調整（頻繁な変更を防ぐ）
-        if (lastPitchChangeTime == null ||
-            DateTime.now().difference(lastPitchChangeTime!).inSeconds >= 5) {
-          // 現在のピッチの平均を取得（直近3秒）
-          double averagePitch = 0;
-          int count = 0;
-          for (int i = recentPitches.length - 1;
-              i >= math.max(0, recentPitches.length - 3);
-              i--) {
-            averagePitch += recentPitches[i];
-            count++;
-          }
-          averagePitch /= count;
-
-          // 平均ピッチが5の倍数に近い値であれば調整
-          double roundedPitch = (averagePitch / 5).round() * 5.0;
-
-          // 新しいテンポを適用
-          targetPitch = roundedPitch;
-          _changeMusicTempo(targetPitch);
-          lastPitchChangeTime = DateTime.now();
-
-          print('テンポ調整: $targetPitch BPM');
-        }
-      }
     }
   }
 
@@ -1923,7 +1987,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                               style: const TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
-                                color: Colors.white,
+                                color: AppColors.textPrimary,
                               ),
                             ),
                           ],
@@ -2183,11 +2247,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
   Color _getPhaseColor() {
     switch (currentPhase) {
       case ExperimentPhase.freeWalking:
-        return Colors.blue;
+        return AppColors.accent;
       case ExperimentPhase.pitchAdjustment:
-        return Colors.teal;
+        return AppColors.info;
       case ExperimentPhase.pitchIncreasing:
-        return Colors.purple;
+        return AppColors.accentDark;
     }
   }
 
@@ -3041,102 +3105,125 @@ class _BLEHomePageState extends State<BLEHomePage> {
             const SizedBox(height: 16),
 
             // --- 歩行ピッチ (SPM) 表示カード ---
-            Card(
-              elevation: 4,
-              color: Colors.lightBlue.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.directions_walk,
-                            color: Colors.blue), // アイコン変更
-                        const SizedBox(width: 8),
-                        const Text(
-                          '歩行ピッチ (SPM)', // ラベル変更
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
+            AppCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(AppSpacing.xs),
+                        decoration: BoxDecoration(
+                          color: AppColors.accent.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
                         ),
-                        const Spacer(),
-                        // 記録中インジケーター (新規追加)
-                        if (isRecording)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.red,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.fiber_manual_record,
-                                    color: Colors.white, size: 12),
-                                SizedBox(width: 4),
-                                Text(
-                                  '記録中',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          _displaySpm > 0
-                              ? _displaySpm.toStringAsFixed(1)
-                              : '--',
-                          style: const TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.indigo,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        const Text(
-                          'SPM', // 単位変更
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.indigo,
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          '歩数: $_displayStepCount',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey.shade700,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: Text(
-                        latestData?.timestamp != null
-                            ? '最終センサー更新: ${DateFormat('HH:mm:ss.SSS').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}'
-                            : '',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade600,
+                        child: Icon(
+                          Icons.directions_walk,
+                          color: AppColors.accent,
+                          size: AppSpacing.iconMd,
                         ),
                       ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Text(
+                        '歩行ピッチ (SPM)',
+                        style: AppTypography.titleMedium.copyWith(
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const Spacer(),
+                      // 記録中インジケーター
+                      if (isRecording)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.sm,
+                            vertical: AppSpacing.xxs,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.error,
+                            borderRadius: BorderRadius.circular(AppSpacing.radiusFull),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.fiber_manual_record,
+                                color: AppColors.textPrimary,
+                                size: AppSpacing.iconXs,
+                              ),
+                              const SizedBox(width: AppSpacing.xxs),
+                              Text(
+                                '記録中',
+                                style: AppTypography.labelSmall.copyWith(
+                                  color: AppColors.textPrimary,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        _displaySpm > 0
+                            ? _displaySpm.toStringAsFixed(1)
+                            : '--',
+                        style: AppTypography.displayLarge.copyWith(
+                          color: AppColors.accent,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'SPM', // 単位変更
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Colors.indigo,
+                        ),
+                      ),
+                      const Spacer(),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            '歩数: $_displayStepCount',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: AppColors.textTertiary,
+                            ),
+                          ),
+                          if (_currentCV > 0)
+                            Text(
+                              'CV: ${(_currentCV * 100).toStringAsFixed(1)}%',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: _currentCV < 0.05 ? AppColors.success : 
+                                       _currentCV < 0.08 ? AppColors.warning : 
+                                       AppColors.error,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Text(
+                      latestData?.timestamp != null
+                          ? '最終センサー更新: ${DateFormat('HH:mm:ss.SSS').format(DateTime.fromMillisecondsSinceEpoch(latestData!.timestamp))}'
+                          : '',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
                     ),
-                    // 記録ボタン追加 (新規追加)
-                    const SizedBox(height: 16),
-                    Row(
+                  ),
+                  // 記録ボタン追加 (新規追加)
+                  const SizedBox(height: 16),
+                  Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         ElevatedButton.icon(
@@ -3175,64 +3262,17 @@ class _BLEHomePageState extends State<BLEHomePage> {
                   ],
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-
-            // --- ★歩行解析詳細カード (新規追加) ---
-            Card(
-              elevation: 4,
-              color: Colors.amber.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.analytics, color: Colors.amber),
-                        SizedBox(width: 8),
-                        Text(
-                          '歩行解析詳細',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    _buildInfoRow(
-                        'SPM (歩行ピッチ):',
-                        (gaitAnalysisService?.currentSpm ?? 0.0) > 0.1
-                            ? gaitAnalysisService!.currentSpm.toStringAsFixed(1)
-                            : '--'),
-                    _buildInfoRow('ピーク検出アルゴリズム:', 'トレンド除去+標準偏差閾値方式'),
-                    _buildInfoRow('信頼度スコア:',
-                        '${((gaitAnalysisService?.reliability ?? 0.0) * 100).toStringAsFixed(1)}%'),
-                    const SizedBox(height: 8),
-                    const Text('直近ステップ間隔 (ms):',
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    Text(
-                      () {
-                        final intervals = gaitAnalysisService?.getLatestStepIntervals() ?? [];
-                        if (intervals.isEmpty) {
-                          return '--';
-                        }
-                        return intervals.map((iv) => iv.toStringAsFixed(0)).join(', ');
-                      }(),
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ],
-                ),
-              ),
-            ),
             const SizedBox(height: 16),
             
             // --- ★心拍数カード ---
-            if (isHeartRateConnected)
+            if (isHeartRateConnected) 
               Card(
                 elevation: 4,
-                color: Colors.red.shade50,
+                color: AppColors.cardBackground,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: const BorderSide(color: AppColors.borderLight, width: 1),
+                ),
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -3240,13 +3280,14 @@ class _BLEHomePageState extends State<BLEHomePage> {
                     children: [
                       const Row(
                         children: [
-                          Icon(Icons.favorite, color: Colors.red),
+                          Icon(Icons.favorite, color: AppColors.error),
                           SizedBox(width: 8),
                           Text(
                             '心拍数',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
+                              color: AppColors.textPrimary,
                             ),
                           ),
                         ],
@@ -3282,7 +3323,7 @@ class _BLEHomePageState extends State<BLEHomePage> {
                                   heartRateDevice!.platformName,
                                   style: TextStyle(
                                     fontSize: 14,
-                                    color: Colors.grey.shade600,
+                                    color: Colors.grey.shade400,
                                   ),
                                 ),
                               if (_lastHeartRateUpdate != null)
@@ -3310,197 +3351,109 @@ class _BLEHomePageState extends State<BLEHomePage> {
                 ),
               ),
             if (isHeartRateConnected) const SizedBox(height: 16),
-
-            // --- ★メトロノームカード (新規追加) ---
-            Card(
-              elevation: 4,
-              color: Colors.teal.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
+            
+            // --- CV（変動係数）トレンドチャート ---
+            if (_cvHistory.isNotEmpty) ...[
+              AppCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Row(
+                    Row(
                       children: [
-                        Icon(Icons.music_note, color: Colors.teal),
-                        SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.all(AppSpacing.xs),
+                          decoration: BoxDecoration(
+                            color: AppColors.accent.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                          ),
+                          child: Icon(
+                            Icons.show_chart,
+                            color: AppColors.accent,
+                            size: AppSpacing.iconMd,
+                          ),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
                         Text(
-                          'メトロノーム',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                          '歩行安定性の推移',
+                          style: AppTypography.titleMedium.copyWith(
+                            color: AppColors.textPrimary,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('テンポ (BPM):'),
-                        DropdownButton<MusicTempo>(
-                          value: selectedTempo, // 現在選択されているテンポ
-                          items: metronomeTempoPresets.map((tempo) {
-                            // メトロノーム用プリセットを使用
-                            return DropdownMenuItem<MusicTempo>(
-                              value: tempo,
-                              child: Text(tempo.name),
-                            );
-                          }).toList(),
-                          onChanged: isPlaying // 再生中は変更不可
-                              ? null
-                              : (MusicTempo? newTempo) {
-                                  if (newTempo != null) {
-                                    _changeTempo(newTempo);
-                                  }
-                                },
-                        ),
-                      ],
+                    const SizedBox(height: AppSpacing.md),
+                    CvTrendChart(
+                      cvValues: _cvHistory,
+                      targetCv: 0.05,
+                      height: 200,
                     ),
-                    const SizedBox(height: 10),
-                    Center(
-                      child: ElevatedButton.icon(
-                        icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                        label: Text(isPlaying ? "停止" : "再生"),
-                        onPressed: _togglePlayback,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                              isPlaying ? Colors.orange : Colors.green,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 30, vertical: 10),
-                        ),
+                    const SizedBox(height: AppSpacing.sm),
+                    Text(
+                      'CV値が低いほど歩行が安定しています（目標: 5%以下）',
+                      style: AppTypography.bodySmall.copyWith(
+                        color: AppColors.textTertiary,
                       ),
                     ),
-                    // メトロノームモード切り替えスイッチを追加
-                    const SizedBox(height: 10),
-                    if (Platform.isAndroid) // Androidの場合のみ表示
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Text('メトロノームモード:'),
-                          const SizedBox(width: 10),
-                          Switch(
-                            value: _useNativeMetronome,
-                            onChanged: isPlaying
-                                ? null // 再生中は変更不可
-                                : (bool value) {
-                                    setState(() {
-                                      _useNativeMetronome = value;
-                                      print(
-                                          'メトロノームモード切替: ${value ? "ネイティブ" : "Dart"}');
-                                    });
-                                  },
-                            activeColor: Colors.blue,
-                          ),
-                          Text(
-                            _useNativeMetronome ? 'ネイティブ' : 'Dart',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: _useNativeMetronome
-                                  ? Colors.blue
-                                  : Colors.orange,
-                            ),
-                          ),
-                        ],
-                      ),
                   ],
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
+            ],
 
-            // --- 加速度情報カード (変更なし) ---
-            Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.speed, color: Colors.orange),
-                        SizedBox(width: 8),
-                        Text(
-                          '加速度情報',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _buildAccelDataColumn(
-                            'X軸', latestData?.accX, Colors.red),
-                        _buildAccelDataColumn(
-                            'Y軸', latestData?.accY, Colors.green),
-                        _buildAccelDataColumn(
-                            'Z軸', latestData?.accZ, Colors.blue),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Text(
-                          '合成加速度:',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          latestData?.magnitude != null
-                              ? '${latestData!.magnitude!.toStringAsFixed(3)} G'
-                              : '-- G',
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                      ],
-                    ),
-                  ],
+            // --- コントロールボタン ---
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                // メトロノームボタン
+                ElevatedButton.icon(
+                  icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
+                  label: Text('メトロノーム ${isPlaying ? "停止" : "再生"}'),
+                  onPressed: _togglePlayback,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isPlaying ? Colors.redAccent : const Color(0xFF424242),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // --- ジャイロ情報カード ---
-            Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.directions_walk, color: Colors.orange),
-                        SizedBox(width: 8),
-                        Text(
-                          'ジャイロセンサー情報',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _buildGyroDataColumn(
-                            'X軸', latestData?.gyroX, Colors.red),
-                        _buildGyroDataColumn(
-                            'Y軸', latestData?.gyroY, Colors.green),
-                        _buildGyroDataColumn(
-                            'Z軸', latestData?.gyroZ, Colors.blue),
-                      ],
-                    ),
-                  ],
+                // メトロノーム設定ボタン
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.settings),
+                  label: Text('BPM: ${selectedTempo?.bpm ?? 100}'),
+                  onPressed: () => _showMetronomeSettings(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey.shade800,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                  ),
                 ),
-              ),
+                // センサー情報ボタン
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.sensors),
+                  label: const Text('センサー情報'),
+                  onPressed: () => _showSensorInfo(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey.shade800,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                  ),
+                ),
+                // 歩行解析詳細ボタン
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.analytics),
+                  label: const Text('歩行解析'),
+                  onPressed: () => _showGaitAnalysis(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey.shade800,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
 
@@ -3508,6 +3461,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
             if (bpmSpots.length > 1) // データが2点以上あれば表示
               Card(
                 elevation: 4,
+                color: AppColors.cardBackground,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: const BorderSide(color: AppColors.borderLight, width: 1),
+                ),
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -3586,7 +3544,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
             if (isRecording && experimentRecords.isNotEmpty)
               Card(
                 elevation: 4,
-                color: Colors.blue.shade50,
+                color: AppColors.cardBackground,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: const BorderSide(color: AppColors.borderLight, width: 1),
+                ),
                 margin: const EdgeInsets.only(top: 16, bottom: 24),
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -5065,6 +5027,148 @@ class _BLEHomePageState extends State<BLEHomePage> {
         _stopRealExperiment();
       }
     });
+  }
+
+  // メトロノーム設定ダイアログを表示
+  void _showMetronomeSettings() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('メトロノーム設定'),
+          content: StatefulBuilder(
+            builder: (BuildContext context, StateSetter setState) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('テンポ (BPM):'),
+                  const SizedBox(height: 10),
+                  DropdownButton<MusicTempo>(
+                    value: selectedTempo,
+                    isExpanded: true,
+                    items: metronomeTempoPresets.map((tempo) {
+                      return DropdownMenuItem<MusicTempo>(
+                        value: tempo,
+                        child: Text('${tempo.name} (${tempo.bpm} BPM)'),
+                      );
+                    }).toList(),
+                    onChanged: isPlaying ? null : (MusicTempo? newTempo) {
+                      if (newTempo != null) {
+                        setState(() {
+                          _changeTempo(newTempo);
+                        });
+                      }
+                    },
+                  ),
+                  if (Platform.isAndroid) ...[
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        const Text('メトロノームモード:'),
+                        const SizedBox(width: 10),
+                        Switch(
+                          value: _useNativeMetronome,
+                          onChanged: isPlaying ? null : (bool value) {
+                            setState(() {
+                              _useNativeMetronome = value;
+                            });
+                          },
+                        ),
+                        Text(_useNativeMetronome ? 'ネイティブ' : 'Dart'),
+                      ],
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('閉じる'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // センサー情報ダイアログを表示
+  void _showSensorInfo() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('センサー情報'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('加速度センサー', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                Text('X軸: ${latestData?.accX?.toStringAsFixed(3) ?? "--"} G'),
+                Text('Y軸: ${latestData?.accY?.toStringAsFixed(3) ?? "--"} G'),
+                Text('Z軸: ${latestData?.accZ?.toStringAsFixed(3) ?? "--"} G'),
+                Text('合成加速度: ${latestData?.magnitude?.toStringAsFixed(3) ?? "--"} G'),
+                const SizedBox(height: 20),
+                const Text('ジャイロセンサー', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                Text('X軸: ${latestData?.gyroX?.toStringAsFixed(3) ?? "--"} deg/s'),
+                Text('Y軸: ${latestData?.gyroY?.toStringAsFixed(3) ?? "--"} deg/s'),
+                Text('Z軸: ${latestData?.gyroZ?.toStringAsFixed(3) ?? "--"} deg/s'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('閉じる'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // 歩行解析詳細ダイアログを表示
+  void _showGaitAnalysis() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('歩行解析詳細'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('SPM (歩行ピッチ): ${(gaitAnalysisService?.currentSpm ?? 0.0) > 0.1 ? gaitAnalysisService!.currentSpm.toStringAsFixed(1) : "--"}'),
+                const SizedBox(height: 10),
+                Text('ピーク検出アルゴリズム: トレンド除去+標準偏差閾値方式'),
+                const SizedBox(height: 10),
+                Text('信頼度スコア: ${((gaitAnalysisService?.reliability ?? 0.0) * 100).toStringAsFixed(1)}%'),
+                const SizedBox(height: 10),
+                const Text('直近ステップ間隔 (ms):', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(() {
+                  final intervals = gaitAnalysisService?.getLatestStepIntervals() ?? [];
+                  if (intervals.isEmpty) {
+                    return '--';
+                  }
+                  return intervals.map((iv) => iv.toStringAsFixed(0)).join(', ');
+                }()),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('閉じる'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // メトロノームの初期化処理

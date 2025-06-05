@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:math' as math;
+import 'dart:async';
 import '../models/sensor_data.dart';
 
 /// 足首センサーデータから歩行ステップとピッチ(SPM)を検出するサービス
@@ -28,12 +29,20 @@ class GaitAnalysisService {
   int _samplingRate = 60; // サンプリングレートを60Hzに固定
   final List<double> _recentFrequencies = []; // 最近検出した周波数
   final List<double> _fftMagnitudes = []; // デバッグ用FFT振幅値
+  M5SensorData? _latestSensorData; // 最新のセンサーデータ
+  
+  // ステップ検出用
+  final StreamController<int> _stepController = StreamController<int>.broadcast();
+  Stream<int> get stepStream => _stepController.stream;
+  DateTime? _lastStepTime;
+  DateTime? get lastStepTime => _lastStepTime;
 
   // --- ゲッター ---
   int get stepCount => _stepCount;
   double get currentSpm => _currentSpm;
   double get reliability => _reliability;
   List<double> get fftMagnitudes => List.unmodifiable(_fftMagnitudes); // デバッグ用
+  M5SensorData? get latestSensorData => _latestSensorData;
 
   /// コンストラクタ
   GaitAnalysisService({
@@ -64,6 +73,9 @@ class GaitAnalysisService {
 
   /// 新しいセンサーデータを処理
   void addSensorData(M5SensorData sensorData) {
+    // 最新のセンサーデータを保存
+    _latestSensorData = sensorData;
+    
     // バッファにデータを追加
     _dataBuffer.add(sensorData);
 

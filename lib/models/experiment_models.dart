@@ -7,6 +7,7 @@ class ExperimentCondition {
   final bool useMetronome;
   final bool explicitInstruction;
   final String description;
+  final bool useAdaptiveControl; // 個別対応機能の使用フラグ
 
   const ExperimentCondition({
     required this.id,
@@ -14,6 +15,7 @@ class ExperimentCondition {
     required this.useMetronome,
     required this.explicitInstruction,
     required this.description,
+    this.useAdaptiveControl = false, // デフォルトはfalse
   });
 
   /// 事前定義された実験条件
@@ -62,6 +64,36 @@ enum AdvancedExperimentPhase {
 enum InductionVariation {
   increasing, // ベースラインから+20%まで増加
   decreasing // ベースラインから-20%まで減少
+}
+
+/// 実験タイプを定義する列挙型
+enum ExperimentType {
+  traditional, // 従来の順序固定実験
+  randomOrder, // ランダム順序実験（音への反応研究用）
+}
+
+/// ランダム実験のフェーズタイプ
+enum RandomPhaseType {
+  freeWalk, // 自由歩行
+  pitchKeep, // 現状歩行ピッチキープ
+  pitchIncrease, // 歩行ピッチ上昇
+}
+
+/// ランダム実験フェーズの情報
+class RandomPhaseInfo {
+  final RandomPhaseType type;
+  final String name;
+  final String description;
+  final Duration duration;
+  final double? targetSpmMultiplier; // ベースラインに対する倍率
+
+  const RandomPhaseInfo({
+    required this.type,
+    required this.name,
+    required this.description,
+    required this.duration,
+    this.targetSpmMultiplier,
+  });
 }
 
 /// 実験フェーズの詳細情報を表すクラス
@@ -160,12 +192,17 @@ class ExperimentSession {
   final Map<String, dynamic> subjectData; // 年齢、性別、運動習慣など
   final InductionVariation inductionVariation;
   final Map<AdvancedExperimentPhase, Duration> phaseDurations;
+  final ExperimentType experimentType;
 
   /// 誘導フェーズでのテンポ変化割合(1ステップあたり)
   final double inductionStepPercent;
 
   /// 誘導フェーズのステップ数
   final int inductionStepCount;
+
+  /// ランダム実験用のフェーズリスト
+  List<RandomPhaseInfo>? randomPhaseSequence;
+  int currentRandomPhaseIndex = 0;
 
   AdvancedExperimentPhase currentPhase;
   DateTime? currentPhaseStartTime;
@@ -175,6 +212,14 @@ class ExperimentSession {
   double followRate = 0.0;
   int adaptationSeconds = 0;
   List<Map<String, dynamic>> timeSeriesData = [];
+  
+  /// 歩行安定性メトリクス
+  double currentCV = 0.0; // 変動係数
+  double currentSymmetry = 1.0; // 左右対称性
+  
+  /// 反応時間追跡
+  DateTime? lastTempoChangeTime;
+  Duration? responseTime;
 
   ExperimentSession({
     required this.id,
@@ -185,8 +230,10 @@ class ExperimentSession {
     this.inductionVariation = InductionVariation.increasing,
     this.inductionStepPercent = 0.05,
     this.inductionStepCount = 4,
+    this.experimentType = ExperimentType.traditional,
     Map<AdvancedExperimentPhase, Duration>? customPhaseDurations,
     this.currentPhase = AdvancedExperimentPhase.preparation,
+    this.randomPhaseSequence,
   }) : phaseDurations = customPhaseDurations ??
             {
               AdvancedExperimentPhase.preparation: ExperimentPhaseInfo
@@ -303,6 +350,45 @@ class ExperimentSession {
   double calculateFollowRate(double targetSpm, double actualSpm) {
     if (targetSpm <= 0 || actualSpm <= 0) return 0.0;
     return (1.0 - (actualSpm - targetSpm).abs() / targetSpm) * 100.0;
+  }
+
+  /// ランダム実験の次のフェーズに進む
+  void advanceToNextRandomPhase() {
+    if (randomPhaseSequence == null || 
+        currentRandomPhaseIndex >= randomPhaseSequence!.length - 1) {
+      return;
+    }
+    
+    currentRandomPhaseIndex++;
+    currentPhaseStartTime = DateTime.now();
+  }
+
+  /// 現在のランダムフェーズを取得
+  RandomPhaseInfo? getCurrentRandomPhase() {
+    if (randomPhaseSequence == null || 
+        currentRandomPhaseIndex >= randomPhaseSequence!.length) {
+      return null;
+    }
+    return randomPhaseSequence![currentRandomPhaseIndex];
+  }
+
+  /// テンポ変更時の反応時間を記録開始
+  void startResponseTimeTracking() {
+    lastTempoChangeTime = DateTime.now();
+    responseTime = null;
+  }
+
+  /// 反応完了時の時間を記録
+  void recordResponseTime() {
+    if (lastTempoChangeTime != null && responseTime == null) {
+      responseTime = DateTime.now().difference(lastTempoChangeTime!);
+    }
+  }
+
+  /// 歩行安定性メトリクスを更新
+  void updateStabilityMetrics(double cv, double symmetry) {
+    currentCV = cv;
+    currentSymmetry = symmetry;
   }
 }
 
