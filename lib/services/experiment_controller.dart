@@ -7,9 +7,12 @@ import 'dart:io';
 import 'package:csv/csv.dart';
 
 import '../models/experiment_models.dart';
+import '../models/sensor_data.dart';
 import '../utils/gait_analysis_service.dart';
 import 'metronome.dart';
 import 'native_metronome.dart';
+import 'adaptive_tempo_controller.dart';
+import 'ble_service.dart';
 
 /// 実験の進行とデータ収集を管理するコントローラクラス
 class ExperimentController {
@@ -41,7 +44,7 @@ class ExperimentController {
   bool _useNativeMetronome = true;
 
   /// 安定性追跡パラメータ
-  List<double> _recentSpmValues = [];
+  final List<double> _recentSpmValues = [];
   int _stableSeconds = 0;
   bool _isStable = false;
   final int _requiredStableSeconds = 30; // 安定とみなす秒数
@@ -49,6 +52,23 @@ class ExperimentController {
 
   /// 最新の検出SPM
   double _currentSpm = 0.0;
+
+  /// 適応的テンポ制御
+  final AdaptiveTempoController _adaptiveController = AdaptiveTempoController();
+
+  /// ランダム実験用のフェーズタイマー
+  Timer? _randomPhaseTimer;
+
+  /// 歩行安定性解析
+  final List<double> _recentStrideIntervals = [];
+
+  /// 加速度センサーデータバッファ（1時間分）
+  final AccelerometerDataBuffer _accelerometerBuffer = AccelerometerDataBuffer(
+    maxBufferSize: 360000, // 100Hz × 3600秒 = 360,000データポイント
+  );
+
+  /// 加速度データリスナーの解除関数
+  Function()? _accelerometerDataListener;
 
   ExperimentController({
     required GaitAnalysisService gaitAnalysisService,
@@ -81,6 +101,8 @@ class ExperimentController {
     Map<AdvancedExperimentPhase, Duration>? customPhaseDurations,
     double inductionStepPercent = 0.05,
     int inductionStepCount = 4,
+    ExperimentType experimentType = ExperimentType.traditional,
+    List<RandomPhaseInfo>? randomPhaseSequence,
   }) async {
     // 前のセッションがあれば停止
     await stopExperiment();
@@ -98,9 +120,17 @@ class ExperimentController {
       customPhaseDurations: customPhaseDurations,
       inductionStepPercent: inductionStepPercent,
       inductionStepCount: inductionStepCount,
+      experimentType: experimentType,
+      randomPhaseSequence: randomPhaseSequence,
     );
 
     _sendMessage('実験を開始しました: ${condition.name}');
+
+    // 加速度データバッファをクリア
+    _accelerometerBuffer.clear();
+
+    // 加速度データの収集を開始
+    _startAccelerometerDataCollection();
 
     // 準備フェーズから開始
     _startCurrentPhase();
@@ -124,6 +154,12 @@ class ExperimentController {
     _adaptationStabilityTimer?.cancel();
     _adaptationStabilityTimer = null;
 
+    _randomPhaseTimer?.cancel();
+    _randomPhaseTimer = null;
+
+    // 加速度データ収集を停止
+    _stopAccelerometerDataCollection();
+
     // メトロノームを停止
     if (isPlaying) {
       if (_useNativeMetronome) {
@@ -136,12 +172,14 @@ class ExperimentController {
     // データを保存
     if (_currentSession != null) {
       await _saveSessionData(_currentSession!);
+      await _saveAccelerometerData(_currentSession!);
       onSessionComplete?.call(_currentSession!);
       _sendMessage('実験を終了しました: ${_currentSession!.condition.name}');
     }
 
     _currentSession = null;
     _recentSpmValues.clear();
+    _recentStrideIntervals.clear();
     _stableSeconds = 0;
     _isStable = false;
   }
@@ -151,6 +189,14 @@ class ExperimentController {
     if (_currentSession == null) return;
 
     final session = _currentSession!;
+
+    // ランダム実験タイプの場合
+    if (session.experimentType == ExperimentType.randomOrder) {
+      _startRandomPhase();
+      return;
+    }
+
+    // 従来の実験タイプの場合
     final phase = session.currentPhase;
     final phaseInfo = session.getPhaseInfo();
 
@@ -276,6 +322,11 @@ class ExperimentController {
     if (_currentSession == null) return;
 
     final session = _currentSession!;
+
+    // 適応的テンポ制御の初期化
+    if (session.condition.useAdaptiveControl && session.baselineSpm > 0) {
+      _adaptiveController.initialize(session.baselineSpm);
+    }
 
     // 条件に応じてメトロノームを開始
     if (session.condition.useMetronome && session.baselineSpm > 0) {
@@ -566,6 +617,46 @@ class ExperimentController {
     final currentSpm = _gaitAnalysisService.currentSpm;
     _currentSpm = currentSpm;
 
+    // ストライド間隔を更新（CV計算用）
+    if (currentSpm > 0) {
+      final strideInterval = 60.0 / currentSpm; // SPMから間隔を計算
+      _recentStrideIntervals.add(strideInterval);
+      if (_recentStrideIntervals.length > 30) {
+        _recentStrideIntervals.removeAt(0);
+      }
+    }
+
+    // 歩行安定性メトリクスを計算
+    final cv = GaitStabilityAnalyzer.calculateCV(_recentStrideIntervals);
+    session.updateStabilityMetrics(cv, 1.0); // 対称性は現在のところ1.0固定
+
+    // 適応的テンポ制御の更新
+    double adaptiveTargetSpm = session.targetSpm;
+    if (session.condition.useAdaptiveControl && currentSpm > 0) {
+      adaptiveTargetSpm = _adaptiveController.updateTargetSpm(
+        currentSpm: currentSpm,
+        currentCv: cv,
+        timestamp: DateTime.now(),
+      );
+
+      // メトロノームのテンポを更新
+      if (isPlaying && (adaptiveTargetSpm - currentTempo).abs() > 1.0) {
+        _changeMetronomeTempo(adaptiveTargetSpm);
+      }
+    }
+
+    // 反応時間の追跡
+    if (session.lastTempoChangeTime != null &&
+        session.responseTime == null &&
+        currentSpm > 0) {
+      // テンポ変更に対する追従率をチェック
+      final followRate =
+          session.calculateFollowRate(session.targetSpm, currentSpm);
+      if (followRate > 90.0) {
+        session.recordResponseTime();
+      }
+    }
+
     // 追加データを収集
     final additionalData = {
       'spmHistory': List<double>.from(_recentSpmValues),
@@ -576,6 +667,10 @@ class ExperimentController {
       'isPlaying': isPlaying,
       'currentTempo': currentTempo,
       'inductionStepIndex': _currentInductionStepIndex,
+      'cv': cv,
+      'useAdaptiveControl': session.condition.useAdaptiveControl,
+      'adaptiveTargetSpm': adaptiveTargetSpm,
+      'responseTime': session.responseTime?.inMilliseconds,
     };
 
     // データを記録
@@ -605,7 +700,7 @@ class ExperimentController {
       // ファイル名を生成
       final fileName =
           'experiment_${session.condition.id}_${session.subjectId}_${DateFormat('yyyyMMdd_HHmmss').format(session.startTime)}.csv';
-      final filePath = '${folderPath}/${fileName}';
+      final filePath = '$folderPath/$fileName';
 
       // CSVデータを作成
       final csvData = <List<dynamic>>[];
@@ -696,6 +791,87 @@ class ExperimentController {
     print('ExperimentController: $message');
   }
 
+  /// 加速度データ収集を開始
+  void _startAccelerometerDataCollection() {
+    // gaitAnalysisServiceからセンサーデータを取得
+    _accelerometerDataListener = () {
+      final sensorData = _gaitAnalysisService.latestSensorData;
+      if (sensorData != null) {
+        _accelerometerBuffer.add(sensorData);
+      }
+    };
+
+    // 定期的にデータを収集（10Hz - gaitAnalysisServiceの更新頻度に合わせる）
+    Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (_accelerometerDataListener != null) {
+        _accelerometerDataListener!();
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  /// 加速度データ収集を停止
+  void _stopAccelerometerDataCollection() {
+    _accelerometerDataListener = null;
+  }
+
+  /// 加速度データをファイルに保存
+  Future<void> _saveAccelerometerData(ExperimentSession session) async {
+    try {
+      final data = _accelerometerBuffer.data;
+      if (data.isEmpty) {
+        _sendMessage('保存する加速度データがありません');
+        return;
+      }
+
+      final directory = await getApplicationDocumentsDirectory();
+      final folderPath = '${directory.path}/experiment_data';
+      final folder = Directory(folderPath);
+      if (!await folder.exists()) {
+        await folder.create(recursive: true);
+      }
+
+      // ファイル名を生成
+      final fileName =
+          'accelerometer_${session.condition.id}_${session.subjectId}_${DateFormat('yyyyMMdd_HHmmss').format(session.startTime)}.csv';
+      final filePath = '$folderPath/$fileName';
+
+      // CSVデータを作成
+      final csvData = <List<dynamic>>[];
+
+      // ヘッダー行
+      csvData.add(['# Accelerometer Data']);
+      csvData.add(['# Subject ID: ${session.subjectId}']);
+      csvData.add(['# Condition: ${session.condition.id}']);
+      csvData.add([
+        '# Start Time: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(session.startTime)}'
+      ]);
+      csvData.add(['# Data Points: ${data.length}']);
+      csvData.add([
+        '# Memory Usage: ${_accelerometerBuffer.estimatedMemoryUsageMB.toStringAsFixed(2)} MB'
+      ]);
+      csvData.add([]);
+
+      // データヘッダー
+      csvData.add(M5SensorData.getCsvHeaders());
+
+      // データ行
+      for (final sensorData in data) {
+        csvData.add(sensorData.toCsvRow());
+      }
+
+      // CSVファイルに書き込み
+      final file = File(filePath);
+      final csvString = const ListToCsvConverter().convert(csvData);
+      await file.writeAsString(csvString);
+
+      _sendMessage('加速度データを保存しました: $fileName (${data.length}データポイント)');
+    } catch (e) {
+      _sendMessage('加速度データ保存エラー: $e');
+    }
+  }
+
   /// リソースを解放
   void dispose() {
     stopExperiment();
@@ -708,6 +884,78 @@ class ExperimentController {
     // 評価データをsessionに追加
     _currentSession!.subjectData['subjective_evaluation'] = evaluation.toJson();
     _sendMessage('主観評価が記録されました');
+  }
+
+  /// ランダムフェーズを開始
+  void _startRandomPhase() {
+    if (_currentSession == null ||
+        _currentSession!.randomPhaseSequence == null) {
+      return;
+    }
+
+    final session = _currentSession!;
+    final currentPhase = session.getCurrentRandomPhase();
+
+    if (currentPhase == null) {
+      // すべてのフェーズが完了
+      stopExperiment();
+      return;
+    }
+
+    _sendMessage('${currentPhase.name}を開始しました');
+
+    // フェーズに応じた処理
+    switch (currentPhase.type) {
+      case RandomPhaseType.freeWalk:
+        // メトロノームを停止
+        if (isPlaying) {
+          if (_useNativeMetronome) {
+            _nativeMetronome.stop();
+          } else {
+            _metronome.stop();
+          }
+        }
+        _sendMessage('自由に歩いてください');
+        break;
+
+      case RandomPhaseType.pitchKeep:
+        // 現在のベースラインSPMでメトロノームを開始
+        if (session.baselineSpm > 0) {
+          _startMetronome(session.baselineSpm);
+          session.targetSpm = session.baselineSpm;
+          _sendMessage(
+              '歩行を継続してください（BPM: ${session.baselineSpm.toStringAsFixed(1)}）');
+        }
+        break;
+
+      case RandomPhaseType.pitchIncrease:
+        // ベースラインの倍率でメトロノームを開始
+        if (session.baselineSpm > 0 &&
+            currentPhase.targetSpmMultiplier != null) {
+          final targetSpm =
+              session.baselineSpm * currentPhase.targetSpmMultiplier!;
+          _startMetronome(targetSpm);
+          session.targetSpm = targetSpm;
+          session.startResponseTimeTracking(); // 反応時間の計測開始
+          _sendMessage('歩行を継続してください（BPM: ${targetSpm.toStringAsFixed(1)}）');
+        }
+        break;
+    }
+
+    // フェーズタイマーを開始
+    _randomPhaseTimer?.cancel();
+    _randomPhaseTimer = Timer(currentPhase.duration, () {
+      _handleRandomPhaseCompletion();
+    });
+  }
+
+  /// ランダムフェーズの完了処理
+  void _handleRandomPhaseCompletion() {
+    if (_currentSession == null) return;
+
+    final session = _currentSession!;
+    session.advanceToNextRandomPhase();
+    _startRandomPhase();
   }
 
   /// 実験を次のフェーズに手動で進める

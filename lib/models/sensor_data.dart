@@ -56,4 +56,87 @@ class M5SensorData {
   // bpmデータからのアクセサ
   double? get bpm => type == 'bpm' ? data['bpm']?.toDouble() : null;
   int? get lastInterval => type == 'bpm' ? data['lastInterval'] : null;
+
+  /// CSVフォーマット用の行データを生成
+  List<dynamic> toCsvRow() {
+    return [
+      timestamp,
+      device,
+      type,
+      accX ?? '',
+      accY ?? '',
+      accZ ?? '',
+      gyroX ?? '',
+      gyroY ?? '',
+      gyroZ ?? '',
+      magnitude ?? '',
+      bpm ?? '',
+      lastInterval ?? '',
+    ];
+  }
+
+  /// CSVヘッダーを取得
+  static List<String> getCsvHeaders() {
+    return [
+      'timestamp',
+      'device',
+      'type',
+      'acc_x',
+      'acc_y',
+      'acc_z',
+      'gyro_x',
+      'gyro_y',
+      'gyro_z',
+      'magnitude',
+      'bpm',
+      'last_interval',
+    ];
+  }
+}
+
+/// 加速度センサーデータのバッファリングクラス
+class AccelerometerDataBuffer {
+  final int maxBufferSize;
+  final List<M5SensorData> _buffer = [];
+  
+  AccelerometerDataBuffer({this.maxBufferSize = 60000}); // デフォルト: 1分間分（100Hz想定）
+
+  /// データを追加
+  void add(M5SensorData data) {
+    if (data.type == 'raw' || data.type == 'imu') {
+      _buffer.add(data);
+      
+      // バッファサイズを超えたら古いデータを削除
+      while (_buffer.length > maxBufferSize) {
+        _buffer.removeAt(0);
+      }
+    }
+  }
+
+  /// バッファをクリア
+  void clear() {
+    _buffer.clear();
+  }
+
+  /// 現在のバッファサイズを取得
+  int get size => _buffer.length;
+
+  /// バッファデータを取得（コピーを返す）
+  List<M5SensorData> get data => List.from(_buffer);
+
+  /// 指定時間範囲のデータを取得
+  List<M5SensorData> getDataInTimeRange(DateTime start, DateTime end) {
+    final startMs = start.millisecondsSinceEpoch;
+    final endMs = end.millisecondsSinceEpoch;
+    
+    return _buffer.where((data) {
+      return data.timestamp >= startMs && data.timestamp <= endMs;
+    }).toList();
+  }
+
+  /// メモリ使用量の推定（MB）
+  double get estimatedMemoryUsageMB {
+    // 1データポイントあたり約100バイトと仮定
+    return (_buffer.length * 100) / (1024 * 1024);
+  }
 }
