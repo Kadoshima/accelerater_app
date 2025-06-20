@@ -5,6 +5,7 @@ import '../../services/background_service.dart';
 import '../../utils/gait_analysis_service.dart';
 import '../../services/experiment_controller.dart';
 import '../../core/utils/logger_service.dart';
+import '../../services/ble_service.dart';
 
 /// ロガーサービスのプロバイダー
 final loggerServiceProvider = Provider<LoggerService>((ref) {
@@ -83,3 +84,12 @@ class BackgroundServiceController {
     BackgroundService.service.invoke('update', data);
   }
 }
+
+/// BLEサービスのプロバイダー
+final bleServiceProvider = Provider<BleService>((ref) {
+  final service = BleService();
+  ref.onDispose(() {
+    service.dispose();
+  });
+  return service;
+});

@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart'; // 位置情報を取得するためのパッケージ
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // 独自モジュール
 import 'models/sensor_data.dart';
@@ -33,6 +34,16 @@ import 'core/theme/app_spacing.dart';
 import 'presentation/widgets/common/app_card.dart';
 import 'presentation/widgets/common/app_button.dart';
 import 'presentation/widgets/cv_trend_chart.dart';
+
+// 新しいセンサー抽象化レイヤー
+import 'core/sensors/sensors.dart';
+import 'core/plugins/research_plugin.dart';
+import 'presentation/providers/sensor_providers.dart';
+import 'services/ble_service.dart';
+import 'presentation/widgets/sensor_selection_dialog.dart';
+import 'services/sensor_data_recorder.dart';
+import 'presentation/screens/plugin_selection_screen.dart';
+import 'presentation/providers/plugin_providers.dart';
 
 // 実験フェーズを定義する列挙型（クラスの外に定義）
 enum ExperimentPhase {
@@ -78,10 +89,12 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'HealthCore M5 Demo',
-      theme: AppTheme.darkTheme, // Use our new dark theme
-      home: const BLEHomePage(),
+    return ProviderScope(
+      child: MaterialApp(
+        title: 'HealthCore M5 Demo',
+        theme: AppTheme.darkTheme, // Use our new dark theme
+        home: const BLEHomePage(),
+      ),
     );
   }
 }
@@ -148,14 +161,14 @@ class MusicTempo {
 }
 
 /// ホーム画面
-class BLEHomePage extends StatefulWidget {
+class BLEHomePage extends ConsumerStatefulWidget {
   const BLEHomePage({Key? key}) : super(key: key);
 
   @override
-  State<BLEHomePage> createState() => _BLEHomePageState();
+  ConsumerState<BLEHomePage> createState() => _BLEHomePageState();
 }
 
-class _BLEHomePageState extends State<BLEHomePage> {
+class _BLEHomePageState extends ConsumerState<BLEHomePage> {
   // スキャン/接続周り
   bool isScanning = false;
   bool isConnecting = false;
@@ -335,6 +348,11 @@ class _BLEHomePageState extends State<BLEHomePage> {
   bool _isLocationEnabled = false;
   String _locationErrorMessage = '';
 
+  // 新しいセンサーマネージャー関連
+  ISensorManager? _sensorManager;
+  final Map<String, StreamSubscription> _sensorSubscriptions = {};
+  bool _useNewSensorLayer = false; // 新しいセンサー抽象化レイヤーを使用するかのフラグ
+
   @override
   void initState() {
     super.initState();
@@ -457,23 +475,145 @@ class _BLEHomePageState extends State<BLEHomePage> {
 
   // デバイス選択ダイアログを表示
   Future<void> _showDeviceSelectionDialog() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => DeviceConnectionScreen(
-          onConnectionComplete: (BluetoothDevice? imu, BluetoothDevice? hr) {
-            setState(() {
-              targetDevice = imu;
-              heartRateDevice = hr;
-              isConnected = imu != null;
-              isHeartRateConnected = hr != null;
-            });
-            Navigator.pop(context);
-            _initializeComponents();
-          },
-        ),
+    // 新しいセンサーレイヤーを使用するかどうかの選択ダイアログ
+    final bool? useNewLayer = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('センサー選択方法'),
+        content: const Text('どちらの方法でセンサーを選択しますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('従来の方法（BLE専用）'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('新しい方法（統合センサー）'),
+          ),
+        ],
       ),
     );
+
+    if (useNewLayer == null) return; // キャンセルされた場合
+
+    if (useNewLayer) {
+      // 新しいセンサー選択ダイアログを使用
+      _useNewSensorLayer = true;
+      await _showNewSensorSelectionDialog();
+    } else {
+      // 従来のBLE専用接続画面を使用
+      _useNewSensorLayer = false;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DeviceConnectionScreen(
+            onConnectionComplete: (BluetoothDevice? imu, BluetoothDevice? hr) {
+              setState(() {
+                targetDevice = imu;
+                heartRateDevice = hr;
+                isConnected = imu != null;
+                isHeartRateConnected = hr != null;
+              });
+              Navigator.pop(context);
+              _initializeComponents();
+            },
+          ),
+        ),
+      );
+    }
+  }
+
+  // 新しいセンサー選択ダイアログを表示
+  Future<void> _showNewSensorSelectionDialog() async {
+    final bool connected = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const SensorSelectionDialog(),
+    ) ?? false;
+
+    if (connected) {
+      // センサーマネージャーを取得
+      _sensorManager = ref.read(sensorManagerProvider);
+      
+      // センサーデータストリームを購読
+      await _subscribeToSensorStreams();
+      
+      setState(() {
+        isConnected = true;
+      });
+      
+      await _initializeComponents();
+    }
+  }
+
+  // センサーデータストリームを購読
+  Future<void> _subscribeToSensorStreams() async {
+    if (_sensorManager == null) return;
+
+    // 加速度センサーを探す
+    final accelSensors = _sensorManager!.getSensorsByType(SensorType.accelerometer);
+    if (accelSensors.isNotEmpty) {
+      final accelSensor = accelSensors.first;
+      
+      // データストリームを購読
+      _sensorSubscriptions['accelerometer'] = accelSensor.dataStream.listen((data) {
+        if (data is AccelerometerData) {
+          _handleAccelerometerData(data);
+        } else if (data is IMUData && data.accelerometer != null) {
+          _handleAccelerometerData(data.accelerometer!);
+        }
+      });
+    }
+
+    // 心拍センサーを探す
+    final heartRateSensors = _sensorManager!.getSensorsByType(SensorType.heartRate);
+    if (heartRateSensors.isNotEmpty) {
+      final heartRateSensor = heartRateSensors.first;
+      
+      _sensorSubscriptions['heartRate'] = heartRateSensor.dataStream.listen((data) {
+        if (data is HeartRateData) {
+          _handleHeartRateData(data);
+        }
+      });
+      
+      setState(() {
+        isHeartRateConnected = true;
+      });
+    }
+  }
+
+  // 加速度データを処理
+  void _handleAccelerometerData(AccelerometerData data) {
+    // 既存のM5SensorDataフォーマットに変換
+    final m5Data = M5SensorData(
+      device: 'sensor_layer',
+      timestamp: data.timestamp.millisecondsSinceEpoch,
+      type: 'raw',
+      data: {
+        'accX': data.x,
+        'accY': data.y,
+        'accZ': data.z,
+        'gyroX': 0.0,
+        'gyroY': 0.0,
+        'gyroZ': 0.0,
+        'heartRate': currentHeartRate,
+      },
+    );
+
+    _processSensorData(m5Data);
+  }
+
+  // 心拍データを処理
+  void _handleHeartRateData(HeartRateData data) {
+    setState(() {
+      currentHeartRate = data.bpm;
+      _lastHeartRateUpdate = data.timestamp;
+    });
+    
+    _recentHeartRates.add(data.bpm);
+    if (_recentHeartRates.length > 10) {
+      _recentHeartRates.removeAt(0);
+    }
   }
 
   // コンポーネントを初期化する
@@ -813,6 +953,36 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // バックグラウンドサービスを開始
     await BackgroundService.startService();
 
+    // 新しいセンサーレイヤーを使用する場合
+    if (_useNewSensorLayer && _sensorManager != null) {
+      final recorder = ref.read(sensorDataRecorderProvider);
+      
+      // 記録セッションを開始
+      await recorder.startRecording(
+        sessionId: experimentFileName,
+        subjectId: subjectId,
+        experimentMetadata: {
+          'experimentMode': isExperimentMode ? 'silent' : 'normal',
+          'targetBPM': selectedTempo?.bpm ?? currentMusicBPM,
+          'duration': experimentDurationSeconds,
+          'location': _currentPosition?.toJson(),
+          'phase': currentPhase.name,
+        },
+      );
+      
+      // 全てのセンサーを記録対象に追加
+      for (final sensor in _sensorManager!.allSensors) {
+        recorder.addSensor(sensor);
+      }
+      
+      // 同期イベントを監視
+      recorder.syncEvents.listen((event) {
+        if (event.type == SyncEventType.error) {
+          print('記録エラー: ${event.message}');
+        }
+      });
+    }
+
     // 加速度データを高頻度（100ms間隔）で記録するタイマー
     experimentTimer =
         Timer.periodic(const Duration(milliseconds: 100), (timer) {
@@ -829,7 +999,13 @@ class _BLEHomePageState extends State<BLEHomePage> {
         });
       }
 
-      // 最新の加速度データがあれば記録
+      // 新しいセンサーレイヤーを使用する場合は自動記録されるのでスキップ
+      if (_useNewSensorLayer) {
+        // N-back応答などのイベントは別途記録
+        return;
+      }
+
+      // 最新の加速度データがあれば記録（従来の方式）
       if (latestData != null) {
         _recordExperimentData();
       }
@@ -920,45 +1096,87 @@ class _BLEHomePageState extends State<BLEHomePage> {
     // バックグラウンドサービスを停止
     await BackgroundService.stopService();
 
+    // 新しいセンサーレイヤーを使用している場合
+    if (_useNewSensorLayer && _sensorManager != null) {
+      final recorder = ref.read(sensorDataRecorderProvider);
+      await recorder.stopRecording();
+      
+      // 記録されたファイルパスを取得
+      final dataPath = await recorder.getFilePath(experimentFileName);
+      final metadataPath = await recorder.getMetadataPath(experimentFileName);
+      
+      print('データファイル保存先: $dataPath');
+      print('メタデータ保存先: $metadataPath');
+      
+      // CSVデータを読み込んでAzureにアップロード
+      try {
+        final dataFile = File(dataPath);
+        if (await dataFile.exists()) {
+          final csvData = await dataFile.readAsString();
+          await _uploadDataToAzure(csvData);
+          
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('データがAzureに自動アップロードされました'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        print('Azureアップロードエラー: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Azureへのアップロードに失敗しました: $e'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    } else {
+      // 従来の方式
+      print(
+          '実験記録を終了しました: $experimentFileName (${experimentRecords.length}件のデータ)');
+      
+      // CSVに変換してローカルに保存
+      String csvData = await _saveExperimentDataToCSV();
+
+      // Azureにデータをアップロード
+      try {
+        await _uploadDataToAzure(csvData);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('データがAzureに自動アップロードされました'),
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (e) {
+        print('Azureアップロードエラー: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Azureへのアップロードに失敗しました: $e'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    }
+
     setState(() {
       isRecording = false;
       remainingSeconds = 0;
     });
-
-    print(
-        '実験記録を終了しました: $experimentFileName (${experimentRecords.length}件のデータ)');
 
     // 音声を停止
     if (isPlaying) {
       await _metronome.stop();
       if (mounted) {
         setState(() {});
-      }
-    }
-
-    // CSVに変換してローカルに保存
-    String csvData = await _saveExperimentDataToCSV();
-
-    // Azureにデータをアップロード
-    try {
-      await _uploadDataToAzure(csvData);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('データがAzureに自動アップロードされました'),
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    } catch (e) {
-      print('Azureアップロードエラー: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Azureへのアップロードに失敗しました: $e'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
       }
     }
 
@@ -1220,6 +1438,19 @@ class _BLEHomePageState extends State<BLEHomePage> {
         backgroundColor: AppColors.surface,
         elevation: 0,
         actions: [
+          // プラグイン選択ボタン
+          IconButton(
+            icon: const Icon(Icons.extension),
+            tooltip: 'プラグイン選択',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const PluginSelectionScreen(),
+                ),
+              );
+            },
+          ),
           // 被験者IDが設定されている場合は表示
           if (subjectId.isNotEmpty)
             Padding(
