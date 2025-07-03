@@ -13,7 +13,16 @@ final sensorFactoryProvider = Provider<SensorFactory>((ref) {
 
 /// Provider for sensor manager
 final sensorManagerProvider = Provider<ISensorManager>((ref) {
-  return ref.watch(sensorFactoryProvider).createSensorManager();
+  final factory = ref.watch(sensorFactoryProvider);
+  final manager = factory.createSensorManager();
+  
+  // 自動的にiPhoneセンサーを登録
+  final phoneSensors = factory.createAllPhoneSensors();
+  for (final sensor in phoneSensors) {
+    manager.registerSensor(sensor);
+  }
+  
+  return manager;
 });
 
 /// Provider for available sensors

@@ -271,7 +271,7 @@ class _DesignSystemDemoState extends State<DesignSystemDemo> {
             AppIconButton(
               icon: Icons.share,
               onPressed: () {},
-              backgroundColor: AppColors.surfaceVariant,
+              backgroundColor: AppColors.surfaceContainerHighest,
               tooltip: 'Share',
             ),
             const SizedBox(width: AppSpacing.md),

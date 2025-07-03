@@ -4,7 +4,7 @@ import '../interfaces/protocol_interface.dart';
 import '../engine/protocol_engine.dart';
 import '../../sensors/interfaces/sensor_interface.dart';
 import '../../../presentation/providers/sensor_providers.dart';
-import '../../../services/sensor_data_recorder.dart';
+import '../../plugins/research_plugin.dart';
 
 /// Provider for protocol engine
 final protocolEngineProvider = Provider<ProtocolEngine>((ref) {
@@ -92,8 +92,12 @@ class _ProtocolExecutionScreenState
   
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, dynamic result) async {
+        if (didPop) {
+          return;
+        }
         if (_currentState == ProtocolState.running || 
             _currentState == ProtocolState.paused) {
           final shouldExit = await showDialog<bool>(
@@ -118,10 +122,13 @@ class _ProtocolExecutionScreenState
           
           if (shouldExit == true) {
             await _engine.stopProtocol();
+            if (mounted) {
+              Navigator.of(context).pop();
+            }
           }
-          return shouldExit ?? false;
+        } else {
+          Navigator.of(context).pop();
         }
-        return true;
       },
       child: Scaffold(
         appBar: AppBar(

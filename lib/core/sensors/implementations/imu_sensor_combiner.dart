@@ -276,6 +276,7 @@ class IMUSensorCombiner extends ISensor<IMUData> {
     
     // Create IMU data with latest values
     final imuData = IMUData(
+      sensorId: id,
       timestamp: now,
       accelerometer: _latestAccelerometer,
       gyroscope: _latestGyroscope,

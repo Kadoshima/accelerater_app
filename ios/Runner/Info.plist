@@ -53,5 +53,11 @@
 	<array>
 		<string>bluetooth-central</string>
 	</array>
+	<key>NSMotionUsageDescription</key>
+	<string>このアプリは歩行解析のために加速度センサーとジャイロスコープを使用します</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>このアプリは歩行データと位置情報を関連付けるために位置情報を使用します</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>このアプリは歩行データと位置情報を関連付けるために位置情報を使用します</string>
 </dict>
 </plist>

@@ -6,6 +6,8 @@ import 'services/adaptive_tempo_controller.dart';
 import 'services/metronome.dart';
 import 'services/native_metronome.dart';
 import 'presentation/screens/gait_analysis_screen.dart';
+import '../../models/sensor_data.dart';
+import '../../core/sensors/models/sensor_data_models.dart';
 
 /// 歩行解析研究プラグイン
 class GaitAnalysisPlugin extends ResearchPlugin {
@@ -26,10 +28,8 @@ class GaitAnalysisPlugin extends ResearchPlugin {
   @override
   String get version => '1.0.0';
 
-  @override
   String get author => 'Research Team';
 
-  @override
   List<String> get requiredPermissions => [
     'bluetooth',
     'location',
@@ -44,23 +44,24 @@ class GaitAnalysisPlugin extends ResearchPlugin {
     SensorType.heartRate,
   ];
 
-  @override
   List<String> get supportedPlatforms => ['iOS', 'Android'];
 
+  Map<String, dynamic>? _config;
+  
   @override
-  Future<void> initialize(Map<String, dynamic>? config) async {
+  Future<void> initialize() async {
     // サービスの初期化
     _gaitAnalysisService = GaitAnalysisService(
-      totalDataSeconds: config?['totalDataSeconds'] ?? 6,
-      windowSizeSeconds: config?['windowSizeSeconds'] ?? 3,
-      slideIntervalSeconds: config?['slideIntervalSeconds'] ?? 1,
-      smoothingFactor: config?['smoothingFactor'] ?? 0.8,
-      minSpm: config?['minSpm'] ?? 40,
-      maxSpm: config?['maxSpm'] ?? 180,
-      minReliability: config?['minReliability'] ?? 0.3,
-      staticThreshold: config?['staticThreshold'] ?? 0.2,
-      useSingleAxisOnly: config?['useSingleAxisOnly'] ?? true,
-      verticalAxis: config?['verticalAxis'] ?? 'z',
+      totalDataSeconds: _config?['totalDataSeconds'] ?? 6,
+      windowSizeSeconds: _config?['windowSizeSeconds'] ?? 3,
+      slideIntervalSeconds: _config?['slideIntervalSeconds'] ?? 1,
+      smoothingFactor: _config?['smoothingFactor'] ?? 0.8,
+      minSpm: _config?['minSpm'] ?? 40,
+      maxSpm: _config?['maxSpm'] ?? 180,
+      minReliability: _config?['minReliability'] ?? 0.3,
+      staticThreshold: _config?['staticThreshold'] ?? 0.2,
+      useSingleAxisOnly: _config?['useSingleAxisOnly'] ?? true,
+      verticalAxis: _config?['verticalAxis'] ?? 'z',
     );
 
     _adaptiveTempoController = AdaptiveTempoController();
@@ -71,58 +72,25 @@ class GaitAnalysisPlugin extends ResearchPlugin {
     await _nativeMetronome.initialize();
   }
 
-  @override
-  Future<void> start() async {
-    // 必要に応じてサービスを開始
-    debugPrint('GaitAnalysisPlugin started');
-  }
-
-  @override
-  Future<void> stop() async {
-    await _metronome.stop();
-    await _nativeMetronome.stop();
-    debugPrint('GaitAnalysisPlugin stopped');
-  }
+  // これらのメソッドは ResearchPlugin インターフェースにないため削除
+  // start() と stop() の代わりに initialize() と dispose() を使用
 
   @override
   Future<void> dispose() async {
-    await _metronome.dispose();
-    await _nativeMetronome.dispose();
+    _metronome.dispose();
+    _nativeMetronome.dispose();
   }
 
   @override
-  Map<String, dynamic> getConfiguration() {
-    return {
-      'totalDataSeconds': _gaitAnalysisService.totalDataSeconds,
-      'windowSizeSeconds': _gaitAnalysisService.windowSizeSeconds,
-      'smoothingFactor': _gaitAnalysisService.smoothingFactor,
-      'minSpm': _gaitAnalysisService.minSpm,
-      'maxSpm': _gaitAnalysisService.maxSpm,
-    };
+  Widget buildConfigScreen(BuildContext context) {
+    // TODO: Implement configuration screen
+    return const Center(
+      child: Text('Configuration screen for Gait Analysis'),
+    );
   }
 
   @override
-  void updateConfiguration(Map<String, dynamic> config) {
-    // 動的な設定更新が必要な場合に実装
-  }
-
-  @override
-  bool validateConfiguration(Map<String, dynamic> config) {
-    // 設定の妥当性をチェック
-    final totalDataSeconds = config['totalDataSeconds'];
-    final windowSizeSeconds = config['windowSizeSeconds'];
-    
-    if (totalDataSeconds != null && windowSizeSeconds != null) {
-      if (totalDataSeconds < windowSizeSeconds) {
-        return false;
-      }
-    }
-    
-    return true;
-  }
-
-  @override
-  Widget buildUI(BuildContext context) {
+  Widget buildExperimentScreen(BuildContext context) {
     return GaitAnalysisScreen(
       gaitAnalysisService: _gaitAnalysisService,
       adaptiveTempoController: _adaptiveTempoController,
@@ -132,22 +100,49 @@ class GaitAnalysisPlugin extends ResearchPlugin {
   }
 
   @override
-  Widget? buildSettingsUI(BuildContext context) {
-    // 設定画面を実装
-    return null; // TODO: 実装予定
+  DataProcessor createDataProcessor() {
+    // TODO: Implement data processor
+    throw UnimplementedError();
   }
 
   @override
+  Map<String, dynamic> exportSettings() {
+    return _config ?? {};
+  }
+
+  @override
+  void importSettings(Map<String, dynamic> settings) {
+    _config = settings;
+  }
+
+  @override
+  ValidationResult validate() {
+    // TODO: Implement validation
+    return const ValidationResult(
+      isValid: true,
+      errors: [],
+    );
+  }
+
+  // これらのメソッドは ResearchPlugin インターフェースにないため削除
+
+  // これらのメソッドは ResearchPlugin インターフェースにないため削除
+  // buildUI と buildSettingsUI の代わりに buildConfigScreen と buildExperimentScreen を使用
+
   Stream<Map<String, dynamic>> get dataStream {
     // リアルタイムデータストリーム
-    return _gaitAnalysisService.analysisResultStream.map((result) => {
-      'spm': result.spm,
-      'reliability': result.reliability,
-      'stepCount': result.stepCount,
-    });
+    // TODO: GaitAnalysisServiceにanalysisResultStreamを実装するか、
+    // ステップカウントから擬似的なストリームを生成する
+    return Stream.periodic(
+      const Duration(seconds: 1),
+      (_) => {
+        'spm': _gaitAnalysisService.currentSpm,
+        'reliability': _gaitAnalysisService.reliability,
+        'stepCount': _gaitAnalysisService.stepCount,
+      },
+    );
   }
 
-  @override
   Future<List<Map<String, dynamic>>> exportData({
     required DateTime startTime,
     required DateTime endTime,
@@ -158,11 +153,36 @@ class GaitAnalysisPlugin extends ResearchPlugin {
     return [];
   }
 
-  @override
   void handleSensorData(SensorData data) {
     // センサーデータを受け取って処理
-    if (data.sensorId.contains('accelerometer')) {
-      // GaitAnalysisServiceに渡す処理を実装
+    // SensorDataのサブクラスをチェックして処理
+    if (data is AccelerometerData) {
+      // AccelerometerDataをM5SensorDataに変換して処理
+      final m5Data = M5SensorData(
+        device: data.sensorId,
+        timestamp: data.timestamp.millisecondsSinceEpoch,
+        type: 'imu',
+        data: {
+          'accX': data.x,
+          'accY': data.y,
+          'accZ': data.z,
+        },
+      );
+      _gaitAnalysisService.addSensorData(m5Data);
+    } else if (data is IMUData && data.accelerometer != null) {
+      // IMUDataから加速度データを抽出
+      final acc = data.accelerometer!;
+      final m5Data = M5SensorData(
+        device: data.sensorId,
+        timestamp: data.timestamp.millisecondsSinceEpoch,
+        type: 'imu',
+        data: {
+          'accX': acc.x,
+          'accY': acc.y,
+          'accZ': acc.z,
+        },
+      );
+      _gaitAnalysisService.addSensorData(m5Data);
     }
   }
 

@@ -1,6 +1,5 @@
 import 'dart:async';
 import '../domain/interfaces/gait_analyzer.dart';
-import '../data/models/sensor_data_adapter.dart';
 import '../../../utils/gait_analysis_service.dart' as legacy;
 import '../../../models/sensor_data.dart' as legacy_models;
 
@@ -50,23 +49,27 @@ class LegacyGaitAnalyzerAdapter implements IGaitAnalyzer {
   
   @override
   List<int> getLatestStepIntervals({int count = 10}) {
-    return _legacyService.getLatestStepIntervals(count: count);
+    return _legacyService.getLatestStepIntervals(count: count).map((d) => d.round()).toList();
   }
   
   @override
   void processSensorData(GaitSensorData data) {
     // Convert GaitSensorData to legacy M5SensorData
     final legacyData = legacy_models.M5SensorData(
-      accelerometerX: data.accelerationX ?? 0.0,
-      accelerometerY: data.accelerationY ?? 0.0,
-      accelerometerZ: data.accelerationZ ?? 0.0,
-      gyroscopeX: 0.0,
-      gyroscopeY: 0.0,
-      gyroscopeZ: 0.0,
-      magnetometerX: 0.0,
-      magnetometerY: 0.0,
-      magnetometerZ: 0.0,
+      device: 'phone',
       timestamp: data.timestamp.millisecondsSinceEpoch,
+      type: 'imu',
+      data: {
+        'accX': data.accelerationX ?? 0.0,
+        'accY': data.accelerationY ?? 0.0,
+        'accZ': data.accelerationZ ?? 0.0,
+        'gyroX': 0.0,
+        'gyroY': 0.0,
+        'gyroZ': 0.0,
+        'magX': 0.0,
+        'magY': 0.0,
+        'magZ': 0.0,
+      },
     );
     
     _legacyService.addSensorData(legacyData);

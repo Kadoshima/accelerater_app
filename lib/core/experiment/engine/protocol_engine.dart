@@ -78,10 +78,11 @@ class ProtocolEngine implements IProtocolContext {
     });
     
     // Start data recording
-    _dataRecorder.startSession(
-      participantId: _metadata['participantId'] ?? 'unknown',
-      sessionType: _currentProtocol!.name,
-      metadata: {
+    await _dataRecorder.startRecording(
+      sessionId: 'protocol_${DateTime.now().millisecondsSinceEpoch}',
+      subjectId: _metadata['participantId'] ?? 'unknown',
+      experimentMetadata: {
+        'protocolType': _currentProtocol!.name,
         'protocol': _currentProtocol!.toJson(),
         ..._metadata,
       },
@@ -201,10 +202,8 @@ class ProtocolEngine implements IProtocolContext {
         if (sensor.status.value == SensorStatus.connected) {
           await sensor.startDataCollection();
           
-          // Subscribe to sensor data for recording
-          _sensorSubscriptions[sensor.id] = sensor.dataStream.listen(
-            (data) => _dataRecorder.recordSensorData(data),
-          );
+          // Add sensor to data recorder
+          _dataRecorder.addSensor(sensor);
         }
       }
     }
@@ -307,7 +306,7 @@ class ProtocolEngine implements IProtocolContext {
   Future<void> _cleanup() async {
     _phaseTimer?.cancel();
     await _stopSensorCollection();
-    await _dataRecorder.stopSession();
+    await _dataRecorder.stopRecording();
     _currentPhaseIndex = 0;
   }
   
@@ -350,7 +349,10 @@ class ProtocolEngine implements IProtocolContext {
     );
     
     _eventController.add(event);
-    _dataRecorder.recordEvent(type, data);
+    _dataRecorder.recordEvent(
+      eventType: type,
+      data: data ?? {},
+    );
   }
   
   // IProtocolContext implementation

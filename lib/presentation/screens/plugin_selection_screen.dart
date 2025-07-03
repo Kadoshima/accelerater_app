@@ -23,13 +23,15 @@ class _PluginSelectionScreenState extends ConsumerState<PluginSelectionScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        title: const Text('研究プラグイン選択'),
+        title: const Text('実験を選択'),
         backgroundColor: AppColors.surface,
+        centerTitle: true,
+        elevation: 0,
       ),
       body: plugins.isEmpty
           ? const Center(
               child: Text(
-                'プラグインがありません',
+                '利用可能な実験がありません',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
             )
@@ -225,7 +227,7 @@ class _PluginSelectionScreenState extends ConsumerState<PluginSelectionScreen> {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => activePlugin.buildUI(context),
+                builder: (context) => activePlugin.buildExperimentScreen(context),
               ),
             );
           }

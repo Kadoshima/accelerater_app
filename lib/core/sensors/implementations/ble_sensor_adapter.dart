@@ -23,7 +23,7 @@ class BLESensorAdapter extends ISensor<IMUData> {
     required this.bleService,
     String? id,
     SensorConfiguration? initialConfig,
-  }) : _id = id ?? 'ble_${device.id.id}',
+  }) : _id = id ?? 'ble_${device.remoteId.str}',
        _configuration = initialConfig ?? const SensorConfiguration(samplingRate: 100.0);
   
   @override
@@ -51,12 +51,12 @@ class BLESensorAdapter extends ISensor<IMUData> {
   
   @override
   SensorInfo get info => SensorInfo(
-    name: device.name,
+    name: device.platformName,
     manufacturer: 'M5Stack',
     model: 'M5StickC Plus 2',
     additionalInfo: {
-      'macAddress': device.id.id,
-      'rssi': device.rssi,
+      'macAddress': device.remoteId.str,
+      'rssi': 0, // RSSI is not directly available
     },
   );
   
@@ -70,7 +70,7 @@ class BLESensorAdapter extends ISensor<IMUData> {
     _status.value = SensorStatus.connecting;
     
     try {
-      await bleService.connectToDevice(device);
+      await bleService.connect(device);
       _status.value = SensorStatus.connected;
     } catch (e) {
       _status.value = SensorStatus.error;
@@ -165,7 +165,8 @@ class BLESensorAdapter extends ISensor<IMUData> {
   @override
   Future<bool> isAvailable() async {
     try {
-      return await device.canSendWriteWithoutResponse;
+      // Check if device is connected
+      return device.isConnected;
     } catch (e) {
       return false;
     }
@@ -174,24 +175,28 @@ class BLESensorAdapter extends ISensor<IMUData> {
   /// Convert legacy M5SensorData to generic IMUData
   IMUData _convertLegacyData(legacy.M5SensorData legacyData) {
     return IMUData(
+      sensorId: id,
       timestamp: DateTime.now(), // Legacy data doesn't have timestamp
       accelerometer: AccelerometerData(
+        sensorId: id,
         timestamp: DateTime.now(),
-        x: legacyData.accelerometerX,
-        y: legacyData.accelerometerY,
-        z: legacyData.accelerometerZ,
+        x: legacyData.accX ?? 0.0,
+        y: legacyData.accY ?? 0.0,
+        z: legacyData.accZ ?? 0.0,
       ),
       gyroscope: GyroscopeData(
+        sensorId: id,
         timestamp: DateTime.now(),
-        x: legacyData.gyroscopeX,
-        y: legacyData.gyroscopeY,
-        z: legacyData.gyroscopeZ,
+        x: legacyData.gyroX ?? 0.0,
+        y: legacyData.gyroY ?? 0.0,
+        z: legacyData.gyroZ ?? 0.0,
       ),
       magnetometer: MagnetometerData(
+        sensorId: id,
         timestamp: DateTime.now(),
-        x: legacyData.magnetometerX,
-        y: legacyData.magnetometerY,
-        z: legacyData.magnetometerZ,
+        x: 0.0, // M5SensorData doesn't have magnetometer data
+        y: 0.0,
+        z: 0.0,
       ),
     );
   }

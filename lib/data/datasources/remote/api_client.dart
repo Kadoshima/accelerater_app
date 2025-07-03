@@ -35,15 +35,15 @@ class ApiClient {
             options.headers[ApiConstants.authorizationHeader] = 'Bearer $_accessToken';
           }
           
-          LoggerService.d('API Request: ${options.method} ${options.path}');
+          logger.debug('API Request: ${options.method} ${options.path}');
           handler.next(options);
         },
         onResponse: (response, handler) {
-          LoggerService.d('API Response: ${response.statusCode} ${response.requestOptions.path}');
+          logger.debug('API Response: ${response.statusCode} ${response.requestOptions.path}');
           handler.next(response);
         },
         onError: (error, handler) async {
-          LoggerService.e('API Error: ${error.message}', error.error);
+          logger.error('API Error: ${error.message}', error.error);
           
           // Handle 401 Unauthorized
           if (error.response?.statusCode == 401 && _refreshToken != null) {
@@ -78,7 +78,7 @@ class ApiClient {
       _dio.interceptors.add(LogInterceptor(
         requestBody: true,
         responseBody: true,
-        logPrint: (log) => LoggerService.d(log.toString()),
+        logPrint: (log) => logger.debug(log.toString()),
       ));
     }
   }
@@ -95,7 +95,7 @@ class ApiClient {
       
       // TODO: Save tokens securely
     } catch (e) {
-      LoggerService.e('Token refresh failed', e);
+      logger.error('Token refresh failed', e);
       rethrow;
     }
   }

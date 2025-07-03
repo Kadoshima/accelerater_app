@@ -170,7 +170,7 @@ class PluginManager with ChangeNotifier {
     }
     
     try {
-      await plugin.start();
+      await plugin.initialize();
       _activePluginId = pluginId;
       _updatePluginState(
         pluginId, 
@@ -202,7 +202,7 @@ class PluginManager with ChangeNotifier {
     }
     
     try {
-      await plugin.stop();
+      await plugin.dispose();
       
       if (_activePluginId == pluginId) {
         _activePluginId = null;
@@ -269,7 +269,8 @@ class PluginManager with ChangeNotifier {
     if (_activePluginId == null) return;
     
     final plugin = _plugins[_activePluginId];
-    plugin?.handleSensorData(data);
+    // TODO: Implement sensor data handling in ResearchPlugin interface
+    // plugin?.handleSensorData(data);
   }
   
   // Getters
@@ -323,10 +324,23 @@ class PluginManager with ChangeNotifier {
     // センサーの利用可能性をチェック
     for (final sensorType in requiredSensors) {
       final sensors = _sensorManager!.getSensorsByType(sensorType);
+      
+      // センサーが見つからない場合、利用可能性を確認
       if (sensors.isEmpty) {
-        throw PluginException(
-          'Required sensor not available: ${sensorType.name}',
-        );
+        // iPhoneの加速度センサーが利用できるか確認
+        bool sensorAvailable = false;
+        for (final sensor in _sensorManager!.allSensors) {
+          if (sensor.type == sensorType && await sensor.isAvailable()) {
+            sensorAvailable = true;
+            break;
+          }
+        }
+        
+        if (!sensorAvailable) {
+          throw PluginException(
+            'Required sensor not available: ${sensorType.name}',
+          );
+        }
       }
     }
   }

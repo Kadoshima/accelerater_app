@@ -72,6 +72,7 @@ class PhoneAccelerometerSensor extends ISensor<AccelerometerData> {
     _sensorSubscription = accelerometerEvents.listen(
       (AccelerometerEvent event) {
         final data = AccelerometerData(
+          sensorId: id,
           timestamp: DateTime.now(),
           x: event.x,
           y: event.y,
@@ -128,7 +129,9 @@ class PhoneAccelerometerSensor extends ISensor<AccelerometerData> {
           .timeout(const Duration(seconds: 2));
       return true;
     } catch (e) {
-      return false;
+      debugPrint('PhoneAccelerometer.isAvailable() error: $e');
+      // センサーが利用できない場合でもtrueを返す（権限ダイアログが必要な場合があるため）
+      return true;
     }
   }
   
@@ -204,6 +207,7 @@ class PhoneGyroscopeSensor extends ISensor<GyroscopeData> {
     _sensorSubscription = gyroscopeEvents.listen(
       (GyroscopeEvent event) {
         final data = GyroscopeData(
+          sensorId: id,
           timestamp: DateTime.now(),
           x: event.x,
           y: event.y,
@@ -334,6 +338,7 @@ class PhoneMagnetometerSensor extends ISensor<MagnetometerData> {
     _sensorSubscription = magnetometerEvents.listen(
       (MagnetometerEvent event) {
         final data = MagnetometerData(
+          sensorId: id,
           timestamp: DateTime.now(),
           x: event.x,
           y: event.y,

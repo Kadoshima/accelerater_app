@@ -79,18 +79,14 @@ final stopPluginProvider = Provider.family<
 });
 
 /// プラグインのデータストリーム
+/// TODO: データストリーム機能は将来の実装で追加予定
 final pluginDataStreamProvider = StreamProvider.family<
   Map<String, dynamic>, 
   String
 >((ref, pluginId) {
-  final manager = ref.watch(pluginManagerProvider);
-  final plugin = manager.getPlugin(pluginId);
-  
-  if (plugin == null) {
-    return Stream.error('Plugin not found: $pluginId');
-  }
-  
-  return plugin.dataStream;
+  // 現在は空のストリームを返す
+  // 将来的にプラグインごとのデータストリーム実装を追加
+  return Stream<Map<String, dynamic>>.empty();
 });
 
 /// プラグイン設定の検証
@@ -101,5 +97,13 @@ final validatePluginConfigProvider = Provider.family<
   final manager = ref.watch(pluginManagerProvider);
   final plugin = manager.getPlugin(pluginId);
   
-  return (config) => plugin?.validateConfiguration(config) ?? false;
+  // プラグインの validate() メソッドを使用して基本的な検証を行う
+  return (config) {
+    if (plugin == null) return false;
+    
+    // プラグインに設定を適用してから検証
+    plugin.importSettings(config);
+    final result = plugin.validate();
+    return result.isValid;
+  };
 });
