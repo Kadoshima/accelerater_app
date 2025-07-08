@@ -9,7 +9,7 @@ class AppColors {
   // Background colors
   static const Color background = Color(0xFF1A1A1A); // Dark grey instead of pure black
   static const Color surface = Color(0xFF2D2D2D); // Medium dark grey
-  static const Color surfaceVariant = Color(0xFF383838); // Lighter grey for cards
+  static const Color surfaceContainerHighest = Color(0xFF383838); // Lighter grey for cards
   
   // Text colors
   static const Color textPrimary = Color(0xFFFFFFFF); // White

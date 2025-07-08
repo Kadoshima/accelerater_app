@@ -421,7 +421,7 @@ class _DeviceConnectionScreenState extends State<DeviceConnectionScreen>
       child: AppCard(
         backgroundColor: allConnected 
             ? AppColors.success.withOpacity(0.1)
-            : AppColors.surfaceVariant,
+            : AppColors.surfaceContainerHighest,
         border: Border.all(
           color: allConnected 
               ? AppColors.success.withOpacity(0.3)

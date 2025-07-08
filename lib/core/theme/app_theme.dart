@@ -176,7 +176,7 @@ class AppTheme {
       
       // Chip theme
       chipTheme: ChipThemeData(
-        backgroundColor: AppColors.surfaceVariant,
+        backgroundColor: AppColors.surfaceContainerHighest,
         disabledColor: AppColors.surface,
         selectedColor: AppColors.accent,
         padding: const EdgeInsets.symmetric(
@@ -213,7 +213,7 @@ class AppTheme {
       
       // Snackbar theme
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: AppColors.surfaceVariant,
+        backgroundColor: AppColors.surfaceContainerHighest,
         contentTextStyle: AppTypography.bodyMedium,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
