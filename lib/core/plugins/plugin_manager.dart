@@ -3,6 +3,7 @@ import 'dart:async';
 import 'research_plugin.dart';
 import '../sensors/interfaces/sensor_interface.dart';
 import '../../plugins/gait_analysis/gait_analysis_plugin.dart';
+import '../../plugins/dual_task/dual_task_plugin.dart';
 
 /// プラグインの状態
 enum PluginState {
@@ -103,6 +104,9 @@ class PluginManager with ChangeNotifier {
   void registerBuiltinPlugins() {
     // 歩行解析プラグインを登録
     registerPlugin(GaitAnalysisPlugin());
+    
+    // 二重課題プロトコルプラグインを登録
+    registerPlugin(DualTaskPlugin());
     
     // 今後、他のプラグインもここに追加
   }
